@@ -100,6 +100,15 @@ class PaperTests(unittest.TestCase):
         b.decide()
         self.assertEqual(b.ledger.events(), [])
 
+    def test_funding_caps_wallet_above_22_to_22_invested(self):
+        b = self.bot()
+        b.ledger.state['balances'] = {'BNB': int(22.78 / 800 * UNIT), 'BTCB': 0, 'USDT': 0}
+        b.ledger.state['initial'] = 22.78
+        b.decide()
+        fund = b.ledger.events()[0]
+        self.assertLessEqual(-fund['deltas']['BNB'] / UNIT * 800, 22.02)
+        self.assertGreater(b.ledger.state['balances']['BNB'] / UNIT * 800, .7)
+
 
 class ExecutionTests(unittest.TestCase):
     def setup_executor(self):

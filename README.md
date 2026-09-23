@@ -2,7 +2,7 @@
 
 An automated BTCB/USDT spot trading bot on BNB Smart Chain, using PancakeSwap V2. BNB is the initial capital and gas asset. After a one-time funding conversion, the strategy buys and sells BTCB. No Binance account is needed. BTCB is a token representing Bitcoin exposure on BNB Chain; it is not native Bitcoin.
 
-**Status:** paper mode is running locally. Live transaction construction, local signing, broadcast, receipt reconciliation and actual-fill accounting are implemented. No funded wallet was supplied, so a real-money buy/sell cycle has **not** been run. The baseline strategy is experimental and its initial historical test lost money. This is a review prototype, not an audited production system.
+**Status:** paper mode is running locally. Live transaction construction, local signing, broadcast, receipt reconciliation and actual-fill accounting are implemented. The public wallet address was checked and holds about $22.78 in BNB as of September 23, 2026, but no signing key was provided, so a real-money buy/sell cycle has **not** been run. The baseline strategy is experimental and its initial historical test lost money. This is a review prototype, not an audited production system.
 
 ## Start
 
@@ -20,7 +20,7 @@ This delivered workspace also contains an ignored `.packages` dependency directo
 ## Activate actual trading
 
 1. Review `TEST_REPORT.md` and run `python -m unittest -v test_bot` after installing dependencies.
-2. Use a **dedicated BNB Smart Chain wallet** containing $5–$22 total BNB/USDT at startup and no BTCB. Keep other wallets separate. The bot refuses a starting balance above $22. Market price changes can put a wallet over this limit. Some native BNB is required for gas even when capital is USDT.
+2. Use a **dedicated BNB Smart Chain wallet** containing $5–$25 total BNB/USDT at startup and no BTCB. Keep other wallets separate. The bot refuses a starting balance above $25 and caps the initial BNB funding swap at $22, retaining native BNB for gas. Market price changes can put a wallet over this limit. Some native BNB is required for gas even when capital is USDT.
 3. Stop the paper process with Ctrl+C, then run:
 
 ```powershell

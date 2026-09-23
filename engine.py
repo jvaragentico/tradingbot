@@ -32,8 +32,8 @@ class TradingBot:
         b = self.chain.balances(self.executor.address) if self.executor else {
             'BNB': int(22/self.market['BNB']['price']*UNIT), 'BTCB': 0, 'USDT': 0}
         initial = equity(b, self.market)
-        if not 5 <= initial <= 22.000001 or b['BTCB']:
-            raise RuntimeError('Use a dedicated wallet holding $5–$22 total BNB/USDT and no BTCB. No transaction sent.')
+        if not 5 <= initial <= 25 or b['BTCB']:
+            raise RuntimeError('Use a dedicated wallet holding $5–$25 total BNB/USDT and no BTCB. No transaction sent.')
         self.ledger.state = {'mode': self.mode, 'wallet': self.executor.address if self.executor else None,
             'balances': b, 'initial': initial, 'initial_btc_price': self.market['BTCB']['price'],
             'created': time.time(), 'paused': False, 'pause_reason': '', 'loss_halt': False,
@@ -74,7 +74,8 @@ class TradingBot:
             self.decision = 'Gas exceeds the 1 gwei limit'
             return
         if not s['funded']:
-            amount = b['BNB'] - max(int(.0003*UNIT), m['gas_price']*800_000)
+            amount = min(int(22/m['BNB']['price']*UNIT),
+                         b['BNB'] - max(int(.0003*UNIT), m['gas_price']*800_000))
             if amount/UNIT*m['BNB']['price'] < 5:
                 self.decision = 'Insufficient BNB after retaining the gas reserve'
                 return
