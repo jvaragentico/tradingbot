@@ -19,6 +19,8 @@ This delivered workspace also contains an ignored `.packages` dependency directo
 
 ## Activate actual trading
 
+For this Windows computer and the checked public wallet, follow [RUN_LIVE.md](RUN_LIVE.md) step by step.
+
 1. Review `TEST_REPORT.md` and run `python -m unittest -v test_bot` after installing dependencies.
 2. Use a **dedicated BNB Smart Chain wallet** containing $5–$25 total BNB/USDT at startup and no BTCB. Keep other wallets separate. The bot refuses a starting balance above $25 and caps the initial BNB funding swap at $22, retaining native BNB for gas. Market price changes can put a wallet over this limit. Some native BNB is required for gas even when capital is USDT.
 3. Run this in another terminal. Port 8766 keeps the review dashboard on 8765 available:
