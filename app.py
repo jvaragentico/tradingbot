@@ -23,6 +23,7 @@ from engine import TradingBot
 ROOT = Path(__file__).parent
 bot = None
 CONTROL_TOKEN = secrets.token_urlsafe(32)
+PORT = 8765
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -39,7 +40,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_data(json.dumps(data, allow_nan=False).encode(), "application/json; charset=utf-8", status)
 
     def do_GET(self):
-        if self.headers.get('Host') not in ('127.0.0.1:8765', 'localhost:8765'):
+        if self.headers.get('Host') not in (f'127.0.0.1:{PORT}', f'localhost:{PORT}'):
             self.send_json({'error': 'Invalid host'}, 403)
             return
         path = urlsplit(self.path).path
@@ -56,7 +57,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_data(data, (mimetypes.guess_type(file.name)[0] or 'text/plain') + '; charset=utf-8')
 
     def do_POST(self):
-        if self.headers.get('Host') not in ('127.0.0.1:8765', 'localhost:8765') or self.headers.get('X-Orbit-Token') != CONTROL_TOKEN:
+        if self.headers.get('Host') not in (f'127.0.0.1:{PORT}', f'localhost:{PORT}') or self.headers.get('X-Orbit-Token') != CONTROL_TOKEN:
             self.send_json({'error': 'Invalid control token or host'}, 403)
             return
         path = urlsplit(self.path).path
@@ -64,7 +65,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "Not found"}, 404)
             return
         origin = self.headers.get("Origin", "")
-        if origin and origin not in ("http://127.0.0.1:8765", "http://localhost:8765"):
+        if origin and origin not in (f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"):
             self.send_json({"error": "Invalid origin"}, 403)
             return
         try:
@@ -90,10 +91,10 @@ class LocalServer(ThreadingHTTPServer):
 
 def serve(worker):
     # Bind first: a second launch must never start an order worker before failing on the port.
-    server = LocalServer(('127.0.0.1', 8765), Handler)
+    server = LocalServer(('127.0.0.1', PORT), Handler)
     try:
         worker.start()
-        print(f'Orbit {worker.mode.upper()} dashboard: http://127.0.0.1:8765', flush=True)
+        print(f'Orbit {worker.mode.upper()} dashboard: http://127.0.0.1:{PORT}', flush=True)
         server.serve_forever()
     except KeyboardInterrupt:
         pass
@@ -107,8 +108,12 @@ if __name__ == "__main__":
     parser.add_argument('--mode', choices=['paper', 'live'], default='paper')
     parser.add_argument('--accept-loss-risk', action='store_true')
     parser.add_argument('--expected-wallet', help='Public 0x address that the local signing key must match')
+    parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--data-dir', type=Path, default=ROOT)
     args = parser.parse_args()
+    if not 1024 <= args.port <= 65535:
+        parser.error('Port must be between 1024 and 65535')
+    PORT = args.port
     if args.mode == 'live' and not args.accept_loss_risk:
         parser.error('Live trading can lose funds. Use --accept-loss-risk only after reviewing the tests and README.')
     args.data_dir.mkdir(parents=True, exist_ok=True)

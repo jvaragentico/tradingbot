@@ -21,15 +21,15 @@ This delivered workspace also contains an ignored `.packages` dependency directo
 
 1. Review `TEST_REPORT.md` and run `python -m unittest -v test_bot` after installing dependencies.
 2. Use a **dedicated BNB Smart Chain wallet** containing $5–$25 total BNB/USDT at startup and no BTCB. Keep other wallets separate. The bot refuses a starting balance above $25 and caps the initial BNB funding swap at $22, retaining native BNB for gas. Market price changes can put a wallet over this limit. Some native BNB is required for gas even when capital is USDT.
-3. Stop the paper process with Ctrl+C, then run:
+3. Run this in another terminal. Port 8766 keeps the review dashboard on 8765 available:
 
 ```powershell
-python app.py --mode live --accept-loss-risk --expected-wallet 0x9D7CC5DAC432Ac61303552Cd8835fF34Aa2C39Ab
+python app.py --mode live --accept-loss-risk --expected-wallet 0x9D7CC5DAC432Ac61303552Cd8835fF34Aa2C39Ab --port 8766
 ```
 
 4. Enter the dedicated wallet's private key in the hidden **local terminal prompt**. The process checks that it matches the expected public address before starting its worker. Do not enter a seed phrase. Never paste the key into chat, the dashboard, a GitHub file, or a command argument. Alternatively an operator can provide `BOT_PRIVATE_KEY` through a secure process environment.
 
-Starting with these flags authorizes the worker to act automatically. It may fund USDT immediately, then trade when a signal qualifies. The dashboard must say **LIVE MODE**. Confirmed actions link to their BscScan transaction hashes. The key is used only in process memory for local signing and is not transmitted to the RPC or dashboard. A compromised host can still steal a key in memory.
+Starting with these flags authorizes the worker to act automatically. It may fund USDT immediately, then trade when a signal qualifies. Open http://127.0.0.1:8766 and verify the dashboard says **LIVE MODE**. Confirmed actions link to their BscScan transaction hashes. The key is used only in process memory for local signing and is not transmitted to the RPC or dashboard. A compromised host can still steal a key in memory.
 
 The live and paper ledgers are separate (`orbit-live.sqlite3` and `orbit-paper.sqlite3`). Keep the live database: removing it loses the order journal and accounting history. Use `--data-dir PATH` for persistent storage. Run only one bot instance per wallet and data directory. Do not manually move funds or trade from the bot wallet during operation; a balance mismatch pauses trading and invalidates P/L until reviewed.
 
