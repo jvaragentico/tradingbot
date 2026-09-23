@@ -24,6 +24,9 @@ class Ledger:
     def daily_trades(self, day):
         return sum(e['kind'] in ('BUY', 'SELL') and int(e['time'])//86400 == day for e in self.events())
 
+    def daily_arbs(self, day):
+        return sum(e['kind'] == 'ARB' and int(e['time'])//86400 == day for e in self.events())
+
 
 def apply_event(state, event):
     for asset, delta in event['deltas'].items():
@@ -42,6 +45,18 @@ def apply_event(state, event):
         state['cost'] -= allocated_cost
         if not state['balances']['BTCB']:
             state['entry'] = state['cost'] = 0
+    elif event['kind'] == 'ARB':
+        asset = event['arb_asset']
+        gained = event['deltas'][asset] / 1e18
+        if gained <= 0:
+            raise RuntimeError('Arbitrage did not increase the starting token')
+        gain_usd = gained * event['asset_price']
+        state['arb_gain_at_fill_usd'] = state.get('arb_gain_at_fill_usd', 0.) + gain_usd - event['gas_usd']
+        # A BTCB gain remains exposed to BTCB price risk until the position is sold.
+        state['realized'] += (gain_usd if asset == 'USDT' else 0.) - event['gas_usd']
+        state['last_arb'] = event['time']
+        if asset == 'BTCB' and state['balances']['BTCB']:
+            state['entry'] = state['cost'] / (state['balances']['BTCB'] / 1e18)
     else:
         state['realized'] -= event['gas_usd']
         if event['kind'] == 'FUND':

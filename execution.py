@@ -8,6 +8,7 @@ from web3.exceptions import TransactionNotFound
 
 from ledger import apply_event
 from market import ROUTER, TOKENS, UNIT
+from arbitrage import ROUTES, ARB_GAS_CAP_USD
 
 TRANSFER = Web3.keccak(text='Transfer(address,address,uint256)')
 SLIPPAGE_BPS = 50
@@ -40,7 +41,7 @@ class LiveExecutor:
         self.account = Account.from_key(private_key)
         self.address = self.account.address
 
-    def submit(self, function, kind, market, value=0, reason=''):
+    def submit(self, function, kind, market, value=0, reason='', gas_budget_usd=MAX_GAS_USD, metadata=None):
         state, w3 = self.ledger.state, self.chain.w3
         if state.get('pending'):
             raise RuntimeError('An unresolved transaction already exists')
@@ -61,15 +62,16 @@ class LiveExecutor:
         params = {'from': self.address, 'value': value, 'nonce': nonce, 'chainId': 56, 'gasPrice': gas_price}
         gas_limit = int(function.estimate_gas(params) * 1.25)
         gas_cap = gas_limit * gas_price
-        if gas_cap / UNIT * market['BNB']['price'] > MAX_GAS_USD:
-            raise RuntimeError('Transaction gas budget exceeds $0.15')
+        if gas_cap / UNIT * market['BNB']['price'] > min(MAX_GAS_USD, gas_budget_usd):
+            raise RuntimeError('Transaction gas budget exceeds the order limit')
         if state['balances']['BNB'] < value + gas_cap:
             raise RuntimeError('Insufficient native BNB for transaction gas')
         transaction = function.build_transaction({**params, 'gas': gas_limit})
         signed = self.account.sign_transaction(transaction)
         txid = Web3.to_hex(signed.hash)
         state['pending'] = {'txid': txid, 'kind': kind, 'value': value, 'reason': reason,
-                            'time': time.time(), 'bnb_price': market['BNB']['price'], 'nonce': nonce}
+                            'time': time.time(), 'bnb_price': market['BNB']['price'], 'nonce': nonce,
+                            **(metadata or {})}
         self.ledger.save()  # durable intent before broadcast: never blindly retry a timed-out order
         try:
             returned = Web3.to_hex(w3.eth.send_raw_transaction(signed.raw_transaction))
@@ -104,6 +106,11 @@ class LiveExecutor:
         event = {'txid': pending['txid'], 'kind': kind, 'time': pending['time'], 'deltas': deltas,
                  'gas_usd': gas_bnb / UNIT * pending['bnb_price'], 'reason': pending['reason'],
                  'block': receipt['blockNumber'], 'execution': 'LIVE'}
+        if kind == 'ARB':
+            event['arb_asset'] = pending['arb_asset']
+            event['asset_price'] = pending['asset_price']
+            if deltas[event['arb_asset']] <= 0:
+                raise RuntimeError('Arbitrage receipt has no positive return of the starting asset')
         event['funding_usd'] = pending['value']/UNIT*pending['bnb_price'] if kind == 'FUND' else 0
         updated = copy.deepcopy(state)
         apply_event(updated, event)
@@ -142,3 +149,29 @@ class LiveExecutor:
         else:
             fn = self.chain.router.functions.swapExactTokensForTokens(amount, minimum, path, self.address, deadline)
         return self.submit(fn, kind, market, value=amount if source == 'BNB' else 0, reason=reason)
+
+    def arbitrage(self, candidate, market):
+        """One router transaction traverses three pools and returns the same token."""
+        route = tuple(candidate['route'])
+        if route not in ROUTES or route[0] != route[-1]:
+            raise ValueError('Unapproved arbitrage route')
+        asset, amount = route[0], int(candidate['amount'])
+        if amount <= 0 or amount > self.ledger.state['balances'][asset] or candidate['notional_usd'] > MAX_ORDER_USD:
+            raise RuntimeError('Arbitrage exceeds the owned balance or $20 cap')
+        token = self.chain.tokens[asset]
+        allowance = token.functions.allowance(self.address, ROUTER).call()
+        if allowance < amount:
+            return self.submit(token.functions.approve(ROUTER, amount), 'APPROVE', market,
+                               reason=f'Exact {asset} allowance for potential arbitrage',
+                               gas_budget_usd=ARB_GAS_CAP_USD)
+        path = [TOKENS[symbol] for symbol in route]
+        quote = self.chain.router.functions.getAmountsOut(amount, path).call()[-1]
+        buffered_minimum = amount + int(candidate['required_gain_usd'] / candidate['asset_price'] * UNIT)
+        if quote < max(candidate['min_out'], buffered_minimum):
+            raise RuntimeError('Arbitrage quote moved below the net-profit threshold')
+        deadline = int(time.time()) + 60
+        fn = self.chain.router.functions.swapExactTokensForTokens(
+            amount, int(candidate['min_out']), path, self.address, deadline)
+        return self.submit(fn, 'ARB', market, reason='Atomic '+'>'.join(route),
+                           gas_budget_usd=ARB_GAS_CAP_USD,
+                           metadata={'arb_asset': asset, 'asset_price': candidate['asset_price']})

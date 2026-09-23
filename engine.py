@@ -4,6 +4,8 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from arbitrage import (ARB_COOLDOWN_SECONDS, ARB_GAS_CAP_USD, MAX_DAILY_ARBS,
+                       SCAN_SECONDS, chain_quote, scan)
 from execution import LiveExecutor
 from ledger import Ledger, apply_event
 from market import Chain, UNIT, amount_out, candles, equity
@@ -20,6 +22,7 @@ class TradingBot:
         self.lock = threading.RLock()
         self.market, self.rows, self.test, self.observed = {}, [], {}, None
         self.error, self.decision, self.last_candles = '', 'Waiting for fresh market data', 0
+        self.arb_scan, self.last_arb_scan, self.last_arb_balances = {}, 0, None
         self.stop_event = threading.Event()
         self.worker = threading.Thread(target=self.loop, daemon=True)
 
@@ -38,7 +41,7 @@ class TradingBot:
             'balances': b, 'initial': initial, 'initial_btc_price': self.market['BTCB']['price'],
             'created': time.time(), 'paused': False, 'pause_reason': '', 'loss_halt': False,
             'pnl_valid': True, 'cost': 0., 'entry': 0., 'realized': 0., 'last_trade': 0.,
-            'funded': b['USDT']/UNIT >= 5, 'pending': None}
+            'last_arb': 0., 'funded': b['USDT']/UNIT >= 5, 'pending': None}
         self.ledger.save()
 
     def paper_fill(self, kind, amount, reason):
@@ -54,6 +57,25 @@ class TradingBot:
         event = {'txid': 'paper-'+uuid.uuid4().hex, 'time': time.time(), 'kind': kind,
             'deltas': deltas, 'gas_usd': gas/UNIT*self.market['BNB']['price'], 'reason': reason,
             'funding_usd': amount/UNIT*self.market['BNB']['price'] if kind == 'FUND' else 0, 'execution': 'PAPER'}
+        apply_event(s, event)
+        self.ledger.state = s
+        self.ledger.save(event)
+
+    def paper_arb_fill(self, candidate):
+        """Simulate an atomic triangle with an adverse fill and gas deduction."""
+        s, m = copy.deepcopy(self.ledger.state), self.market
+        asset, amount = candidate['asset'], candidate['amount']
+        gas = m['gas_price'] * 350_000
+        gas_usd = gas / UNIT * m['BNB']['price']
+        received = candidate['quoted_out'] * 9995 // 10000
+        if gas_usd > ARB_GAS_CAP_USD or received < candidate['min_out'] or s['balances']['BNB'] < gas:
+            self.decision = 'Triangle quote did not survive simulated gas and adverse fill'
+            return
+        deltas = {'BNB': -gas, 'BTCB': 0, 'USDT': 0}
+        deltas[asset] += received - amount
+        event = {'txid': 'paper-'+uuid.uuid4().hex, 'time': time.time(), 'kind': 'ARB',
+                 'deltas': deltas, 'gas_usd': gas_usd, 'reason': 'Atomic '+'>'.join(candidate['route']),
+                 'execution': 'PAPER', 'arb_asset': asset, 'asset_price': candidate['asset_price']}
         apply_event(s, event)
         self.ledger.state = s
         self.ledger.save(event)
@@ -85,6 +107,16 @@ class TradingBot:
                 s['entry'], s['last_trade'], time.time(), self.ledger.daily_trades(int(time.time())//86400))
             if s['loss_halt']:
                 kind, reason = 'SELL', 'Account loss guard: close BTCB exposure'
+            arb = getattr(self, 'arb_scan', {}).get('candidate')
+            if (kind != 'SELL' and arb and not s['loss_halt'] and
+                time.time() - s.get('last_arb', 0) >= ARB_COOLDOWN_SECONDS and
+                self.ledger.daily_arbs(int(time.time())//86400) < MAX_DAILY_ARBS):
+                self.decision = 'Qualified atomic triangle: '+'>'.join(arb['route'])
+                if self.executor:
+                    self.executor.arbitrage(arb, m)
+                else:
+                    self.paper_arb_fill(arb)
+                return
             self.decision = reason
             if kind == 'HOLD':
                 return
@@ -127,6 +159,12 @@ class TradingBot:
                     return
             if time.time()-market['time'] > 30:
                 raise RuntimeError('Snapshot expired during refresh; orders deferred')
+            current_balances = self.ledger.state['balances']
+            if (time.time()-getattr(self, 'last_arb_scan', 0) >= SCAN_SECONDS or
+                    current_balances != getattr(self, 'last_arb_balances', None)):
+                self.arb_scan = scan(market, current_balances,
+                                     lambda route, amount: chain_quote(self.chain, market, route, amount))
+                self.last_arb_scan, self.last_arb_balances = time.time(), current_balances.copy()
             self.decide()
             self.error = ''
 
@@ -167,6 +205,7 @@ class TradingBot:
                 'age': round(time.time()-self.market['time'], 1), 'balances': {k: v/UNIT for k, v in b.items()},
                 'initial': s['initial'], 'equity': value, 'pnl': value-s['initial'] if s['pnl_valid'] else None,
                 'realized': s['realized'] if s['pnl_valid'] else None,
+                'arbitrage': getattr(self, 'arb_scan', {}),
                 'entry': s['entry'], 'signal': target, 'fast': fast, 'slow': slow,
                 'hold': s['initial']*self.market['BTCB']['price']/s['initial_btc_price'],
                 'events': self.ledger.events(), 'candles': self.rows[-120:], 'backtest': self.test}

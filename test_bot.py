@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 from eth_account import Account
 from hexbytes import HexBytes
 from web3 import Web3
+from arbitrage import ROUTES, scan
 from engine import TradingBot
 from execution import LiveExecutor, TRANSFER, transfer_deltas
 from ledger import Ledger, apply_event
@@ -68,6 +69,7 @@ class PaperTests(unittest.TestCase):
         b = TradingBot.__new__(TradingBot)
         b.mode, b.executor, b.market = 'paper', None, market()
         b.ledger, b.lock = Ledger(':memory:'), threading.RLock()
+        self.addCleanup(b.ledger.db.close)
         b.initialize()
         return b
 
@@ -109,10 +111,40 @@ class PaperTests(unittest.TestCase):
         self.assertLessEqual(-fund['deltas']['BNB'] / UNIT * 800, 22.02)
         self.assertGreater(b.ledger.state['balances']['BNB'] / UNIT * 800, .7)
 
+    def test_profitable_paper_triangle_updates_owned_token_and_gas(self):
+        b = self.bot()
+        b.ledger.state['funded'] = True
+        b.ledger.state['balances'] = {'BNB': int(.001*UNIT), 'BTCB': 0, 'USDT': 20*UNIT}
+        candidate = scan(b.market, b.ledger.state['balances'],
+                         lambda route, amount: amount + int(.20*UNIT))['candidate']
+        self.assertIsNotNone(candidate)
+        b.paper_arb_fill(candidate)
+        self.assertEqual(b.ledger.events()[0]['kind'], 'ARB')
+        self.assertGreater(b.ledger.state['balances']['USDT'], 20*UNIT)
+        self.assertLess(b.ledger.state['balances']['BNB'], int(.001*UNIT))
+
+
+class ArbitrageTests(unittest.TestCase):
+    def test_pool_fees_and_gas_block_negative_round_trip(self):
+        balances = {'BNB': int(.001*UNIT), 'BTCB': 0, 'USDT': 20*UNIT}
+        result = scan(market(), balances, lambda route, amount: int(amount*.995))
+        self.assertIsNone(result['candidate'])
+        self.assertLess(result['best']['gross_gain_usd'], 0)
+
+    def test_only_same_asset_routes_with_net_gain_qualify(self):
+        balances = {'BNB': int(.001*UNIT), 'BTCB': 0, 'USDT': 20*UNIT}
+        result = scan(market(), balances, lambda route, amount: amount+int(.20*UNIT))
+        candidate = result['candidate']
+        self.assertIn(tuple(candidate['route']), ROUTES)
+        self.assertEqual(candidate['route'][0], candidate['route'][-1])
+        self.assertGreater(candidate['min_out'], candidate['amount'])
+        self.assertLess(candidate['min_out'], candidate['quoted_out'])
+
 
 class ExecutionTests(unittest.TestCase):
     def setup_executor(self):
         ledger = Ledger(':memory:')
+        self.addCleanup(ledger.db.close)
         ledger.state = state()
         account = Account.create()
         eth = SimpleNamespace(chain_id=56, gas_price=50_000_000, block_number=102,
@@ -150,6 +182,51 @@ class ExecutionTests(unittest.TestCase):
         self.assertIsNone(ledger.state['pending'])
         executor.reconcile()
         self.assertEqual(len(ledger.events()), 1)
+
+    def test_atomic_triangle_receipt_accounts_for_net_usdt(self):
+        executor, ledger, eth, function = self.setup_executor()
+        executor.submit(function, 'ARB', market(), metadata={'arb_asset': 'USDT', 'asset_price': 1.0})
+        receipt = {'status': 1, 'blockNumber': 100, 'gasUsed': 100_000,
+            'effectiveGasPrice': 50_000_000,
+            'logs': [transfer('USDT', executor.address, ROUTER, 20*UNIT),
+                     transfer('USDT', ROUTER, executor.address, int(20.2*UNIT))]}
+        eth.get_transaction_receipt = Mock(return_value=receipt)
+        executor.reconcile()
+        self.assertAlmostEqual(ledger.state['balances']['USDT']/UNIT, 22.2, places=6)
+        self.assertGreater(ledger.state['realized'], 0)
+        self.assertEqual(ledger.events()[0]['kind'], 'ARB')
+
+    def test_triangle_refuses_moved_quote_before_broadcast(self):
+        executor, ledger, eth, function = self.setup_executor()
+        token = Mock()
+        token.functions.allowance.return_value.call.return_value = 20*UNIT
+        executor.chain.tokens = {'USDT': token}
+        router = Mock()
+        router.functions.getAmountsOut.return_value.call.return_value = [20*UNIT, 0, 0, 20*UNIT]
+        executor.chain.router = router
+        candidate = scan(market(), ledger.state['balances'],
+                         lambda route, amount: amount+int(.20*UNIT))['candidate']
+        with self.assertRaises(RuntimeError):
+            executor.arbitrage(candidate, market())
+        eth.send_raw_transaction.assert_not_called()
+
+    def test_triangle_builds_one_atomic_four_token_path(self):
+        executor, ledger, eth, function = self.setup_executor()
+        token = Mock()
+        token.functions.allowance.return_value.call.return_value = 20*UNIT
+        executor.chain.tokens = {'USDT': token}
+        router = Mock()
+        router.functions.getAmountsOut.return_value.call.return_value = [20*UNIT, 0, 0, 20*UNIT+int(.2*UNIT)]
+        executor.chain.router = router
+        candidate = scan(market(), ledger.state['balances'],
+                         lambda route, amount: amount+int(.2*UNIT))['candidate']
+        with patch.object(executor, 'submit', return_value='tx') as submit:
+            self.assertEqual(executor.arbitrage(candidate, market()), 'tx')
+        args = router.functions.swapExactTokensForTokens.call_args.args
+        self.assertEqual(len(args[2]), 4)
+        self.assertEqual(args[2][0], args[2][-1])
+        self.assertGreater(args[1], args[0])
+        self.assertEqual(submit.call_args.args[1], 'ARB')
 
     def test_reverted_transaction_charges_gas_and_pauses(self):
         executor, ledger, eth, function = self.setup_executor()

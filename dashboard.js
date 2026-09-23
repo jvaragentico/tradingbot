@@ -37,11 +37,17 @@ async function refresh(){
     text('base',s.balances.BTCB.toFixed(8)+' BTCB');text('quote',s.balances.USDT.toFixed(4)+' USDT');text('gas-reserve',s.balances.BNB.toFixed(7)+' BNB for gas');
     text('wallet',s.wallet?'Wallet '+s.wallet.slice(0,8)+'…'+s.wallet.slice(-6):'Simulated wallet · native BNB retained for gas');text('gas-cost',usd(s.market.gas_price*180000/1e18*s.market.BNB.price,4));
     $('toggle').disabled=false;text('toggle',(s.paused?'Resume':'Pause')+' '+s.mode.toLowerCase()+' bot');text('trades-title',s.mode==='LIVE'?'Onchain trade activity':'Paper trade activity');
-    text('trade-count',s.events.filter(e=>['BUY','SELL'].includes(e.kind)).length+' buys / sells');$('trades').replaceChildren();
+    text('trade-count',s.events.filter(e=>['BUY','SELL'].includes(e.kind)).length+' trend trades / '+s.events.filter(e=>e.kind==='ARB').length+' arb cycles');$('trades').replaceChildren();
     if(!s.events.length){const row=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=6;cell.className='empty';cell.textContent='Waiting for the first qualifying action.';row.append(cell);$('trades').append(row)}
     for(const e of s.events){const row=document.createElement('tr');for(const v of [date(e.time).toISOString().slice(0,16).replace('T',' '),e.kind,(e.deltas.BTCB/1e18).toFixed(8),(e.deltas.USDT/1e18).toFixed(4),usd(e.gas_usd,4)]){const c=document.createElement('td');c.textContent=v;row.append(c)}const c=document.createElement('td');if(e.execution==='LIVE'){const a=document.createElement('a');a.href='https://bscscan.com/tx/'+e.txid;a.textContent=e.txid.slice(0,10)+'…';a.target='_blank';a.rel='noopener noreferrer';c.append(a)}else{c.textContent='Simulation'}row.append(c);$('trades').append(row)}
     text('pending',s.pending?'Awaiting confirmation: '+s.pending.kind+' · '+s.pending.txid:'No transaction awaiting confirmation');
     const b=s.backtest;if(b.end_usd!=null){text('test-range',date(b.start).toLocaleDateString()+' – '+date(b.end).toLocaleDateString());text('test-end',usd(b.end_usd));text('test-profit',signed(b.end_usd-22)+' from $22 cash');$('test-profit').className='sub '+(b.end_usd>=22?'positive':'negative');text('test-hold',usd(b.hold_end_usd));text('test-stats',b.trade_count+' / '+b.max_drawdown_pct.toFixed(2)+'%');text('test-halted',b.halted?'Triggered':'Not triggered');text('test-notes',b.assumptions)}
+    const arb=s.arbitrage||{}, best=arb.best;
+    text('arb-state',arb.candidate?'QUALIFIED':best?'NO EDGE':'WAITING');
+    text('arb-route',best?best.route.join(' > '):'No funded route yet');
+    text('arb-gain',best?best.gross_gain_usd.toFixed(4)+' USD':'—');
+    text('arb-required',best?'+'+best.required_gain_usd.toFixed(2)+' USD':'—');
+    text('arb-reason',arb.status||'Restart this bot process to enable the new 24-hour arbitrage scanner.');
     draw(s.candles);text('footer-time','Refreshed '+new Date().toLocaleTimeString());
   }catch(e){$('error').hidden=false;text('error',String(e));text('connection','DISCONNECTED');$('connection').className='status-dot bad'}finally{busy=false}
 }
