@@ -13,10 +13,11 @@ The public wallet `0x9D7CC5DAC432Ac61303552Cd8835fF34Aa2C39Ab` held 0.029066815 
 
    ```powershell
    python --version
+   $env:PYTHONPATH = (Resolve-Path .packages).Path
    python -m unittest -q test_bot
    ```
 
-   This delivered copy includes `.packages`, so the tests and app run here without installing anything. For a fresh GitHub clone, first run `python -m pip install -r requirements.txt`.
+   This delivered copy includes `.packages`, so the tests and app run here without installing anything. The `PYTHONPATH` line makes those bundled dependencies available to the test command. For a fresh GitHub clone, first run `python -m pip install -r requirements.txt`.
 
 4. Start the live worker in that PowerShell window:
 
@@ -31,3 +32,4 @@ The public wallet `0x9D7CC5DAC432Ac61303552Cd8835fF34Aa2C39Ab` held 0.029066815 
 The review dashboard stays at **http://127.0.0.1:8765** in paper mode. The live process uses port 8766, and the two modes use separate ledgers. Never treat a paper trade as a real fill.
 
 There is no way to make losses impossible. Refusing to sell below entry price would merely keep a depreciating token in the wallet and disable the protective exit. The existing 2% stop trigger, 5% account loss guard, $20 buy cap, slippage and gas ceilings limit selected risks but cannot promise a maximum realized or unrealized loss.
+
