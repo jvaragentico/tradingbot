@@ -160,6 +160,14 @@ class TradingBot:
             if time.time()-market['time'] > 30:
                 raise RuntimeError('Snapshot expired during refresh; orders deferred')
             current_balances = self.ledger.state['balances']
+            entry = self.ledger.state['entry']
+            # Protective exits must not wait for four optional router quotes.
+            if (current_balances['BTCB'] and entry and
+                (market['BTCB']['price'] <= entry * .98 or
+                 market['BTCB']['price'] >= entry * 1.04 or
+                 equity(current_balances, market) <= self.ledger.state['initial'] * .95)):
+                self.decide()
+                return
             if (time.time()-getattr(self, 'last_arb_scan', 0) >= SCAN_SECONDS or
                     current_balances != getattr(self, 'last_arb_balances', None)):
                 self.arb_scan = scan(market, current_balances,
@@ -209,3 +217,4 @@ class TradingBot:
                 'entry': s['entry'], 'signal': target, 'fast': fast, 'slow': slow,
                 'hold': s['initial']*self.market['BTCB']['price']/s['initial_btc_price'],
                 'events': self.ledger.events(), 'candles': self.rows[-120:], 'backtest': self.test}
+
