@@ -1,34 +1,28 @@
-# Run Orbit on this Windows computer
+# Start the updated live bot
 
-The public wallet `0x3062dffa74ec3b8c232a2ae2799e1565702687df` initially held about $22.80 in BNB. Its live bot has since confirmed a funding swap, approval and BTCB buy. The bot caps each BTCB buy at $20 and retains BNB for gas. This update adds continuous arbitrage quote scanning, but profitable routes may be rare. The trend strategy's recent backtest lost money; live losses remain possible.
+The bot runs independently of Codex usage. Keep Windows awake and online and leave its PowerShell window open. Version 1.2 adds the $17 portfolio floor, gas-aware arbitrage, and revised exits. Saving the files does not update an already-running Python process.
 
-1. Open **PowerShell** on the same Windows computer. Do not put a private key into chat, a browser, GitHub, or a command argument.
-2. Go to the delivered project:
+1. On the current live dashboard, wait until **No transaction awaiting confirmation** is shown. In the PowerShell window running the live bot, press **Ctrl+C** and wait for the command prompt.
+2. Keep `orbit-live.sqlite3`. In that same PowerShell window, run:
 
    ```powershell
    Set-Location 'C:\Users\jojd1\Documents\Codex\2026-09-23\github-plugin-github-openai-curated-remote-3\outputs\trading-bot-v1'
+   python app.py --mode live --accept-loss-risk --expected-wallet 0x3062dffa74ec3b8c232a2ae2799e1565702687df --port 8766 --key-from-clipboard --equity-floor 17
    ```
 
-3. Verify Python and the tests:
+3. When the key prompt appears, copy the **dedicated wallet account's private key** in your wallet application. Return to PowerShell and press **Enter without pasting**. The program reads and clears the clipboard and verifies the public address. Do not send a seed phrase or private key in chat.
+4. Open http://127.0.0.1:8766. Confirm **V1.2**, **LIVE MODE**, **MARKET CONNECTED**, your wallet, and **Portfolio stop floor $17.00**. The active account stop also includes the existing 5% guard, so it can be higher than $17 (about $21.69 for the recorded initial $22.83).
+5. Leave the process open. It manages existing BTCB and scans arbitrage. New trend buys are disabled by default because testing still showed losses. A profitable quote is required for a new arbitrage cycle.
 
-   ```powershell
-   python --version
-   $env:PYTHONPATH = (Resolve-Path .packages).Path
-   python -m unittest -q test_bot
-   ```
+At the active account threshold, the bot attempts to sell BTCB into USDT and latches a stop that prevents further trading, including after a restart. This is a portfolio-value trigger, not a guaranteed minimum wallet value. Fees, price movements, missing gas, outages, a paused worker, or an unresolved transaction can delay or prevent the exit.
 
-   This delivered copy includes `.packages`, so the tests and app run here without installing anything. The `PYTHONPATH` line makes those bundled dependencies available to the test command. For a fresh GitHub clone, first run `python -m pip install -r requirements.txt`.
+The existing 2% position stop and 4% take-profit remain. All exits bypass entry cooldowns and limits. Pause stops new orders including exits and does not liquidate a position. Run only one live process for this wallet. Do not delete the ledger or manually trade from the wallet while the bot runs.
 
-4. **Stop the older live bot with Ctrl+C in its PowerShell window.** Wait until its process exits; do not start two processes for the same wallet and ledger. Keep `orbit-live.sqlite3`, which contains its confirmed transaction history. Then start the updated live worker:
+## Verify locally
 
-   ```powershell
-   python app.py --mode live --accept-loss-risk --expected-wallet 0x3062dffa74ec3b8c232a2ae2799e1565702687df --port 8766 --key-from-clipboard
-   ```
+```powershell
+$env:PYTHONPATH = (Resolve-Path .packages).Path
+python -m unittest -q test_bot
+```
 
-5. The bot displays `Copy the account private key in your wallet app, then return here and press Enter`. **After that prompt appears**, copy the account private key in your wallet app, return to PowerShell, and press Enter. **Do not paste into PowerShell.** The bot reads the clipboard once and clears it. Use only a dedicated bot wallet. The bot checks that the key derives the `--expected-wallet` address before any trading worker starts. If this is a different wallet from the address above, replace `--expected-wallet` with the new wallet's public 0x address before running the command. If you do not have the account private key, stop here; a public address or seed phrase cannot be entered into this mode.
-6. Open **http://127.0.0.1:8766** and verify the header says **LIVE MODE**, the wallet address matches, the health indicator is green, and the **24-hour arbitrage watch** shows a fresh quote. Keep the PowerShell window and computer powered on and awake. The existing funded ledger resumes; it does not repeat the BNB funding swap. The trend strategy can enter and exit BTCB, and the arbitrage scanner checks four atomic triangle routes every 30 seconds. It trades only when a route's quoted gain exceeds its gas budget, minimum gain and buffer. Check the Trades table and BscScan links for confirmed transactions.
-7. Use **Pause** on the live dashboard to stop new orders. Pause does not cancel an already-broadcast transaction or sell a held BTCB position. Use Ctrl+C in the live PowerShell window to stop the worker entirely. Keep `orbit-live.sqlite3`; it records transactions and prevents duplicate submissions after an uncertain broadcast.
-
-The review dashboard stays at **http://127.0.0.1:8765** in paper mode. The live process uses port 8766, and the two modes use separate ledgers. Never treat a paper trade as a real fill.
-
-There is no way to make losses impossible. Refusing to sell below entry price would merely keep a depreciating token in the wallet and disable the protective exit. The existing 2% stop trigger, 5% account loss guard, $20 buy cap, slippage and gas ceilings limit selected risks but cannot promise a maximum realized or unrealized loss.
+For a fresh GitHub clone, install `requirements.txt` first instead of using `.packages`. Forty automated tests cover stops, persisted halt state, accounting, and transaction checks. The paper preview on port 8767 is a simulation and does not execute real wallet transactions.

@@ -1,77 +1,58 @@
-# Orbit trading bot — review v1.1
+# Orbit trading bot — v1.2
 
-An automated BTCB/USDT spot trading bot on BNB Smart Chain, using PancakeSwap V2. BNB is the initial capital and gas asset. After a one-time funding conversion, the strategy buys and sells BTCB. No Binance account is needed. BTCB is a token representing Bitcoin exposure on BNB Chain; it is not native Bitcoin.
+Local BNB Chain bot and dashboard using PancakeSwap V2. BNB supplies initial capital and transaction gas. Python runs independently of Codex and does not use an AI API. It runs while the computer is awake, online, and its PowerShell process remains open.
 
-**Status:** paper and live processes are running locally. The user's live wallet `0x3062dffa74ec3b8c232a2ae2799e1565702687df` has confirmed BNB funding, token approval and one BTCB buy. The user entered the signing key locally; it was never supplied to this project or GitHub. This update adds a continuously running arbitrage scanner and atomic triangle execution. The existing live process must be restarted locally to load the update. No live arbitrage cycle has been executed or validated yet. The baseline trend backtest lost money. This is an experimental review prototype, not an audited production system.
+## What changed
 
-## Start
+- Arbitrage is the default for new trades. Existing BTCB positions retain managed exits. New directional trend positions require `--enable-experimental-trend`; the reference trend backtest still loses money.
+- The scanner compares $5, $10, and up to $20 sizes across four allowlisted USDT/BTCB/WBNB triangle routes. Only funded starting assets are quoted. Every cycle begins and ends in the same token in one atomic router swap.
+- The profit threshold uses current gas prices with enforced approval and swap budgets, 50% estimation headroom, a $0.02 net target, and a $0.02 quote buffer. Each transaction budget is capped at $0.03. Previously paid arbitrage approval costs are carried into subsequent thresholds until a cycle succeeds.
+- Quotes are rechecked before spending approval gas. A smaller trade can qualify when the larger trade has excessive price impact. Pool fees are already included in router output.
+- All position exits bypass entry cooldowns and daily limits. A 2% stop and 4% take-profit remain. After a 2% advance, a 1% pullback can trigger a trailing exit if estimated proceeds cover position costs plus 0.2%.
+- Protective exits run before the optional historical-data refresh or arbitrage scan. Loss exits can close holdings worth less than $5.
+- A **$17 portfolio stop floor** is enabled by default. The existing 5% account guard can stop earlier: the active trigger is `max($17, initial portfolio value × 0.95)`. When triggered, the bot records a durable halt, attempts to sell BTCB into USDT, then pauses trading. Automatic resume is blocked even after a restart.
 
-Requires Python 3.11 or newer.
+These are execution rules, not guaranteed returns or guaranteed exit prices. Reverted transactions and abandoned approvals still cost gas. A successful cycle increasing BTCB remains exposed to BTCB price changes. The reference data assumes USDT is worth $1. The account stop can execute below its trigger during gaps, delays, or unavailable gas.
+
+## Run
+
+Requires Python 3.11+:
 
 ```powershell
 python -m pip install -r requirements.txt
+python -m unittest -q test_bot
 python app.py
 ```
 
-Open http://127.0.0.1:8765. The bot and dashboard run while this process and computer remain on and awake. Market observations refresh about every 10 seconds plus API latency; arbitrage quotes refresh about every 30 seconds; the dashboard polls every 3 seconds. The worker is local, not a hosted 24/7 service.
-
-This delivered workspace also contains an ignored `.packages` dependency directory, so `python app.py` works here without modifying the global Python installation.
-
-## Activate actual trading
-
-For this Windows computer and the checked public wallet, follow [RUN_LIVE.md](RUN_LIVE.md) step by step.
-
-1. Review `TEST_REPORT.md` and run `python -m unittest -v test_bot` after installing dependencies.
-2. Use a **dedicated BNB Smart Chain wallet** containing $5–$25 total BNB/USDT at startup and no BTCB. Keep other wallets separate. The bot refuses a starting balance above $25 and caps the initial BNB funding swap at $22, retaining native BNB for gas. Market price changes can put a wallet over this limit. Some native BNB is required for gas even when capital is USDT.
-3. If the older live bot is already running, stop it with Ctrl+C in its PowerShell window before starting this version. Keep `orbit-live.sqlite3` so the new process resumes its wallet and trade history. Port 8766 keeps the review dashboard on 8765 available:
+Paper mode is the default at http://127.0.0.1:8765. This delivered Windows copy also has an ignored `.packages` dependency directory. See [RUN_LIVE.md](RUN_LIVE.md) for the local restart and key-entry steps.
 
 ```powershell
-python app.py --mode live --accept-loss-risk --expected-wallet 0x3062dffa74ec3b8c232a2ae2799e1565702687df --port 8766 --key-from-clipboard
+python app.py --mode live --accept-loss-risk --expected-wallet 0x3062dffa74ec3b8c232a2ae2799e1565702687df --port 8766 --key-from-clipboard --equity-floor 17
 ```
 
-4. When prompted, copy the dedicated wallet's private key in the wallet app, return to PowerShell and press Enter without pasting. The process reads and clears the clipboard, then checks that the key matches the expected public address before starting its worker. Do not enter a seed phrase. Never paste the key into chat, the dashboard, a GitHub file, or a command argument. Alternatively an operator can provide `BOT_PRIVATE_KEY` through a secure process environment.
+The private key is read locally and checked against the public address. Never supply it in chat, a command argument, or a repository file. The clipboard mode reads and clears the copied key after Enter; it does not accept a seed phrase. A compromised computer can still expose a key in memory.
 
-On Windows, Python's hidden prompt may not accept paste. The live command above uses `--key-from-clipboard` to avoid that issue. Clipboard contents can be exposed to other local apps or clipboard-history tools while copied.
+Keep `orbit-live.sqlite3` and its transaction journal. Restarting with the same wallet and data directory resumes the existing balance and history. Do not start two bots for the same wallet or move wallet funds outside the bot: a mismatch pauses trading and invalidates P/L. A new ledger requires a dedicated wallet with $5–$25 of BNB/USDT and no BTCB; a starting balance already below the configured equity floor halts immediately.
 
-Starting with these flags authorizes the worker to act automatically. An existing funded live ledger resumes without repeating its funding swap. The bot can act on a trend signal or a qualifying arbitrage quote. Open http://127.0.0.1:8766 and verify the dashboard says **LIVE MODE**. Confirmed actions link to their BscScan transaction hashes. The key is used only in process memory for local signing and is not transmitted to the RPC or dashboard. A compromised host can still steal a key in memory.
+## Execution and operation
 
-The live and paper ledgers are separate (`orbit-live.sqlite3` and `orbit-paper.sqlite3`). Keep the live database: removing it loses the order journal and accounting history. Use `--data-dir PATH` for persistent storage. Run only one bot instance per wallet and data directory. Do not manually move funds or trade from the bot wallet during operation; a balance mismatch pauses trading and invalidates P/L until reviewed.
+- One long BTCB position, no leverage; maximum $20 per buy and $22 initial BNB funding conversion, retaining BNB for gas.
+- Experimental trend: closed 20/50-hour averages, a 0.15% band, confirmation now and two hours earlier, rising fast average, and price between the fast average and 1.5% above it. The onchain entry price must also be within 3% of the closed Kraken BTC/USD reference. Six-hour entry cooldown and two trend fills per UTC day; exits bypass both limits.
+- Arbitrage: scans about every 30 seconds plus RPC latency, a 20-second quote-scan budget, two-minute cooldown, and 24 successful cycles per UTC day. No qualifying quote means no arbitrage order.
+- Chain observations and account stops run about every 10 seconds plus API latency. Dashboard updates every 3 seconds. Stops are software polling rules; they are not orders resting on the blockchain.
+- Live slippage limit 0.5%, exact token approvals, 120-second normal swap deadline, 60-second arbitrage deadline. Three confirmations are required before recording actual receipt transfers and gas costs.
+- Refuses transactions above 1 gwei, above their gas budget, or with stale market data. Missing BNB or an unavailable RPC can prevent an exit.
+- Transaction intent and signed hash are saved before broadcast. Uncertain outcomes are reconciled by hash without automatic resubmission. A revert charges gas and pauses trading.
+- **Pause stops all new orders, including exits.** It does not cancel a pending transaction or sell the current holding. The account stop requires the worker to be running and unpaused with a reconciled wallet.
 
-## Strategy and limits
+The service binds to localhost and validates Host, Origin, and a per-process control token. It must not be exposed directly to the internet. There is no restart after reboot, automatic nonce replacement, full reorg recovery, or external-funds reconciliation.
 
-- Market: BTCB/USDT, allowlisted PancakeSwap V2 pool discovered from the verified factory. Initial BNB/USDT funding is a separate activity.
-- Entries/exits: 20-hour and 50-hour simple moving averages with a 0.15% band, using **closed** Kraken BTC/USD candles as a reference. Onchain price must be within 3% of that reference for entries.
-- Arbitrage: every 30 seconds, quote four allowlisted, three-pool PancakeSwap V2 triangles across USDT, BTCB and wrapped BNB. A route starts and ends in the same owned token and executes as **one atomic router swap**. It can run at any hour while the process is awake; no route is traded merely to increase the transaction count.
-- Arbitrage threshold: at most $20 owned-token notional and at least $5. The onchain quote must show at least $0.10 gross gain: up to $0.03 each for an approval and swap, $0.02 minimum net target and $0.02 quote buffer. The swap's minimum output locks in the original token plus $0.08 at the observed asset price. Arbitrage approvals and swaps each have a $0.03 estimated gas cap, a two-minute cooldown and a limit of 24 successful cycles per UTC day. An approval may still cost gas if the opportunity disappears; a reverted swap still costs gas.
-- Position: long only, no leverage, one position, maximum $20 per buy. Sells can close an appreciated position above $20.
-- Normal orders: six-hour cooldown and two buy/sell trades per UTC day. A 2% stop trigger, 4% take-profit trigger, and 5% account loss trigger can cause exits outside those limits. The 5% account trigger disables future entries and attempts to close BTCB.
-- Gas: native BNB reserve retained. Transactions refused above 1 gwei or $0.15 maximum estimated gas cost each. Insufficient gas can prevent an exit.
-- Execution: exact token allowances, 0.5% live slippage ceiling, 120-second transaction deadline, three confirmations before recording fills. Pool fees are included in actual output amounts.
-- Reliability: signed transaction hash and intent are saved **before** broadcast. Unknown or timed-out outcomes are reconciled by that hash, never blindly resubmitted. Reverted transactions charge gas and pause trading.
-- Manual pause stops new orders including protective exits. It cannot cancel an already-broadcast transaction and does not sell a held position.
+## Evidence
 
-Limits reduce some risks; they cannot make losses impossible. Price gaps, network failures, gas shortages, MEV, token/bridge risks, smart-contract failures, and stablecoin depegging remain. A $22-to-$100 target is not a supported forecast. Public APIs require no paid key; gas and trading fees are not free.
-
-## Testing and limitations
-
-```powershell
-python -m unittest -v test_bot
-```
-
-Tests cover a complete paper funding/buy/sell cycle, atomic arbitrage route selection and net-profit floor, cost accounting, trend signals, next-candle backtesting, loss guards, locally signed transaction encoding, receipt parsing, confirmation depth, transaction reverts, caps, and duplicate prevention after a broadcast timeout. The user's initial funding, approval and BTCB buy have been confirmed onchain. Arbitrage execution remains unit/component tested and has not yet had a funded mainnet acceptance test.
-
-The displayed backtest covers the trend strategy only. It uses about 30 days of Kraken BTC/USD data, next-hour opening fills, 0.25% pool fee plus 0.15% adverse slippage per trade, and two estimated gas charges per trade. It starts with $22 cash and excludes the initial BNB conversion cost. It is not an onchain historical replay: historical liquidity, gas, approvals, MEV and BTCB/USDT basis are not reconstructed. Backtest stops are checked hourly; live stops are polled. The new arbitrage scanner uses forward live quotes and has no historical profit record. USD estimates assume USDT is worth $1.
-
-The service binds only to localhost and verifies the Host header, Origin and a per-process control token for pause/resume. It has no public authentication or TLS layer and must not be exposed directly to the internet. To operate on a remote machine, retain local binding and access through an authenticated SSH tunnel. The SQLite volume and process must persist; a serverless request handler is not suitable for this worker.
-
-Unresolved broadcasts are deliberately left pending for manual inspection. There is no automatic nonce replacement, dropped-transaction recovery, reorg recovery beyond confirmation depth, or external-funds reconciliation in v1.
+See [STRATEGY_REVIEW.md](STRATEGY_REVIEW.md) for the comparison, forward quote check, and limitations. Forty automated tests pass. Synthetic profitable cycles verify accounting and safeguards, not real-world opportunity frequency. No live arbitrage fill has been validated by this revision. Previous funding, approval, and a BTCB buy exist in the live ledger; v1.2 needs a local restart before its new rules apply.
 
 ## Sources
 
-- [BNB Chain public RPC documentation](https://docs.bnbchain.org/bnb-smart-chain/developers/json_rpc/json-rpc-endpoint/)
-- [PancakeSwap contract repository](https://github.com/pancakeswap/pancake-smart-contracts)
-- [PancakeSwap V2 router source](https://github.com/pancakeswap/pancake-swap-periphery/blob/master/contracts/PancakeRouter.sol)
-- [PancakeSwap token list](https://github.com/pancakeswap/token-list)
-- [PancakeSwap V2 fee explanation](https://docs.pancakeswap.finance/earn/pancakeswap-pools)
+- [PancakeSwap V2 router documentation](https://developer.pancakeswap.finance/contracts/v2/router-v2)
+- [PancakeSwap router source](https://github.com/pancakeswap/pancake-swap-periphery/blob/master/contracts/PancakeRouter.sol)
 - [Kraken OHLC API](https://docs.kraken.com/api-reference/market-data/get-ohlc-data)
-- [Web3.py transaction API](https://web3py.readthedocs.io/en/v7.5.0/web3.eth.html)

@@ -1,0 +1,84 @@
+{
+  "historical": {
+    "full": {
+      "baseline": {
+        "end_usd": 20.7447,
+        "trade_count": 6,
+        "max_drawdown_pct": 6.7,
+        "halted": true
+      },
+      "revised": {
+        "end_usd": 20.8264,
+        "trade_count": 4,
+        "max_drawdown_pct": 5.33,
+        "halted": true,
+        "closed_trades": 2,
+        "winning_trades": 0
+      }
+    },
+    "first_half": {
+      "baseline": {
+        "end_usd": 20.7447,
+        "trade_count": 6,
+        "max_drawdown_pct": 6.7,
+        "halted": true
+      },
+      "revised": {
+        "end_usd": 20.8264,
+        "trade_count": 4,
+        "max_drawdown_pct": 5.33,
+        "halted": true,
+        "closed_trades": 2,
+        "winning_trades": 0
+      }
+    },
+    "second_half": {
+      "baseline": {
+        "end_usd": 20.8211,
+        "trade_count": 6,
+        "max_drawdown_pct": 5.36,
+        "halted": true
+      },
+      "revised": {
+        "end_usd": 21.6477,
+        "trade_count": 7,
+        "max_drawdown_pct": 4.76,
+        "halted": false,
+        "closed_trades": 3,
+        "winning_trades": 1
+      }
+    }
+  },
+  "forward": {
+    "block": 123559583,
+    "wallet": "0x3062DFFA74Ec3B8c232A2aE2799e1565702687DF",
+    "result": {
+      "status": "Best triangle -0.0303 USD before gas; requires at least +$0.0623",
+      "best": {
+        "route": [
+          "BTCB",
+          "BNB",
+          "USDT",
+          "BTCB"
+        ],
+        "asset": "BTCB",
+        "amount": 58347341549353,
+        "quoted_out": 57993322664519,
+        "notional_usd": 5.000000000000064,
+        "gross_gain_usd": -0.03033719064428653,
+        "min_out": 58841181451147,
+        "required_gain_usd": 0.06231897192574608,
+        "gas_budgets": {
+          "approval": 0.004698730931736015,
+          "swap": 0.017620240994010057
+        },
+        "approval_cost_usd": 0,
+        "net_gain_usd": -0.0526561625700326,
+        "asset_price": 85693.70715494934
+      },
+      "candidate": null,
+      "errors": 0,
+      "quotes_checked": 6
+    }
+  }
+}

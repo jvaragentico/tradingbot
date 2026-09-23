@@ -1,5 +1,6 @@
 import copy
 import threading
+import tempfile
 import time
 import unittest
 from types import SimpleNamespace
@@ -8,12 +9,12 @@ from unittest.mock import Mock, patch
 from eth_account import Account
 from hexbytes import HexBytes
 from web3 import Web3
-from arbitrage import ROUTES, scan
+from arbitrage import ROUTES, gas_budgets, scan
 from engine import TradingBot
 from execution import LiveExecutor, TRANSFER, transfer_deltas
 from ledger import Ledger, apply_event
 from market import UNIT, TOKENS, ROUTER, ROUTER_ABI, amount_out
-from strategy import action, backtest, signal
+from strategy import action, backtest, protective_exit, signal
 
 
 def market():
@@ -50,13 +51,34 @@ class StrategyTests(unittest.TestCase):
         self.assertEqual(action(list(range(100)), False, 100, 0, 1000, 1001, 0)[0], 'HOLD')
 
     def test_backtest_cannot_see_future_close(self):
-        rows = [{'time': i*3600, 'open': 100, 'close': 100} for i in range(60)]
-        rows[50]['close'] = 200
+        rows = [{'time': i*3600, 'open': 100 if i <= 50 else 100.8,
+                 'close': 100 if i < 50 else 100.8} for i in range(80)]
         result = backtest(rows, .01)
         buys = [t for t in result['trades'] if t['side'] == 'BUY']
         self.assertTrue(buys)
         self.assertGreaterEqual(buys[0]['time'], rows[51]['time'])
-        self.assertEqual(buys[0]['price'], 100)
+        self.assertEqual(buys[0]['price'], 100.8)
+        changed = copy.deepcopy(rows)
+        for row in changed[65:]:
+            row['close'] = row['open'] = 200
+        prefix = lambda r: [t for t in r['trades'] if t['time'] < rows[65]['time']]
+        self.assertEqual(prefix(result), prefix(backtest(changed, .01)))
+
+    def test_trend_reversal_exit_bypasses_entry_limits(self):
+        self.assertEqual(action(list(range(160, 100, -1)), True, 101, 100,
+                                1000, 1001, 10)[0], 'SELL')
+
+    def test_confirmed_entry_and_spike_filter(self):
+        closes = [100 + i*.03 for i in range(80)]
+        self.assertEqual(action(closes, False, closes[-1], 0, 0, 100000, 0)[0], 'BUY')
+        self.assertEqual(action([100]*60 + [110]*3, False, 110, 0, 0, 100000, 0)[0], 'HOLD')
+
+    def test_trailing_exit_needs_advance_and_cost_coverage(self):
+        self.assertIsNotNone(protective_exit(101.9, 100, 103, 20.2, 20))
+        self.assertIsNone(protective_exit(101.9, 100, 103, 19.99, 20))
+        self.assertIsNone(protective_exit(100, 100, 101, 20.2, 20))
+        # Cost filter must never suppress the original stop.
+        self.assertIsNotNone(protective_exit(97, 100, 103, 19, 20))
 
     def test_fees_prevent_free_roundtrip_profit(self):
         got = amount_out(20*UNIT, 1_000_000*UNIT, 10*UNIT)
@@ -123,8 +145,93 @@ class PaperTests(unittest.TestCase):
         self.assertGreater(b.ledger.state['balances']['USDT'], 20*UNIT)
         self.assertLess(b.ledger.state['balances']['BNB'], int(.001*UNIT))
 
+    def test_default_does_not_enter_unvalidated_trend(self):
+        b = self.bot()
+        b.ledger.state['funded'] = True
+        b.ledger.state['balances']['USDT'] = 20*UNIT
+        b.rows = [{'close': 98000 + i*30} for i in range(80)]
+        b.market['BTCB']['price'] = b.rows[-1]['close']
+        b.decide()
+        self.assertIn('experimental trend entries disabled', b.decision)
+        self.assertEqual(b.ledger.events(), [])
+
+    def test_protective_exit_survives_candle_api_outage(self):
+        b = self.bot()
+        b.paper_fill('FUND', int(.026*UNIT), 'fund')
+        b.paper_fill('BUY', 20*UNIT, 'buy')
+        b.rows = []
+        b.market['BTCB']['price'] = b.ledger.state['entry']*.97
+        b.chain = SimpleNamespace(snapshot=lambda: b.market)
+        with patch('engine.candles', side_effect=RuntimeError('Kraken unavailable')) as fetch:
+            b.tick()
+        fetch.assert_not_called()
+        self.assertEqual(b.ledger.events()[0]['kind'], 'SELL')
+        self.assertEqual(b.ledger.state['position_peak'], 0)
+
+    def test_17_dollar_floor_liquidates_then_latches_halt(self):
+        b = self.bot()
+        b.rows = []
+        b.equity_floor = 17
+        s = b.ledger.state
+        s.update(initial=17.5, funded=True, entry=100000., cost=15.)
+        s['balances'] = {'BNB': int(.001*UNIT), 'USDT': 1*UNIT, 'BTCB': int(.00015*UNIT)}
+        # Equity $16.80 is below $17 but above the separate $16.625 (5%) guard.
+        b.decide()
+        self.assertEqual(b.ledger.events()[0]['kind'], 'SELL')
+        self.assertTrue(b.ledger.state['loss_halt'])
+        b.decide()
+        self.assertTrue(b.ledger.state['paused'])
+        with self.assertRaises(ValueError):
+            b.set_paused(False)
+
+    def test_17_floor_keeps_stricter_five_percent_guard(self):
+        b = self.bot()
+        b.ledger.state['initial'] = 22
+        self.assertAlmostEqual(b.loss_threshold(), 20.9)
+
+    def test_account_halt_survives_database_reopen(self):
+        from pathlib import Path
+        with tempfile.NamedTemporaryFile(dir=Path(__file__).parent, suffix='.sqlite3', delete=False) as temp:
+            path = Path(temp.name)
+        try:
+            ledger = Ledger(path)
+            ledger.state = {'loss_halt': True, 'pending': None}
+            ledger.save()
+            ledger.db.close()
+            reopened = Ledger(path)
+            try:
+                self.assertTrue(reopened.state['loss_halt'])
+            finally:
+                reopened.db.close()
+        finally:
+            path.unlink(missing_ok=True)
+            Path(str(path)+'-wal').unlink(missing_ok=True)
+            Path(str(path)+'-shm').unlink(missing_ok=True)
+
+    def test_loss_exit_below_five_dollars_is_not_blocked(self):
+        b = self.bot()
+        b.rows = []
+        b.ledger.state.update(funded=True, entry=100000., cost=4.)
+        b.ledger.state['balances'] = {'BNB': int(.001*UNIT), 'USDT': 10*UNIT, 'BTCB': int(.00004*UNIT)}
+        b.decide()
+        self.assertEqual(b.ledger.events()[0]['kind'], 'SELL')
+
 
 class ArbitrageTests(unittest.TestCase):
+    def test_gas_aware_floor_and_smaller_profitable_size(self):
+        balances = {'BNB': int(.001*UNIT), 'BTCB': 0, 'USDT': 20*UNIT}
+        quote = lambda route, amount: amount + int((.12 - ((amount/UNIT-10)/10)**2*.3)*UNIT)
+        candidate = scan(market(), balances, quote)['candidate']
+        self.assertEqual(candidate['amount'], 10*UNIT)
+        self.assertLess(candidate['required_gain_usd'], .1)
+        self.assertGreater(candidate['min_out']/UNIT-10, sum(gas_budgets(market()).values())+.01999)
+        self.assertIsNone(scan(market(), balances, quote, approval_cost_usd=.1)['candidate'])
+
+    def test_quote_errors_do_not_create_opportunities(self):
+        result = scan(market(), state()['balances'], Mock(side_effect=RuntimeError('RPC timeout')))
+        self.assertIsNone(result['candidate'])
+        self.assertEqual(result['errors'], result['quotes_checked'])
+
     def test_pool_fees_and_gas_block_negative_round_trip(self):
         balances = {'BNB': int(.001*UNIT), 'BTCB': 0, 'USDT': 20*UNIT}
         result = scan(market(), balances, lambda route, amount: int(amount*.995))
@@ -206,9 +313,37 @@ class ExecutionTests(unittest.TestCase):
         executor.chain.router = router
         candidate = scan(market(), ledger.state['balances'],
                          lambda route, amount: amount+int(.20*UNIT))['candidate']
+        router.functions.getAmountsOut.return_value.call.return_value = [candidate['amount']]*4
         with self.assertRaises(RuntimeError):
             executor.arbitrage(candidate, market())
         eth.send_raw_transaction.assert_not_called()
+
+    def test_stale_arbitrage_quote_does_not_spend_approval_gas(self):
+        executor, ledger, eth, function = self.setup_executor()
+        token, router = Mock(), Mock()
+        executor.chain.tokens, executor.chain.router = {'USDT': token}, router
+        token.functions.allowance.return_value.call.return_value = 0
+        candidate = scan(market(), ledger.state['balances'], lambda r, a: a+int(.2*UNIT))['candidate']
+        router.functions.getAmountsOut.return_value.call.return_value = [candidate['amount']]*4
+        with self.assertRaises(RuntimeError):
+            executor.arbitrage(candidate, market())
+        token.functions.approve.assert_not_called()
+        eth.send_raw_transaction.assert_not_called()
+
+    def test_estimate_cannot_exceed_scanner_gas_budget(self):
+        executor, ledger, eth, function = self.setup_executor()
+        with self.assertRaises(RuntimeError):
+            executor.submit(function, 'ARB', market(), gas_budget_usd=.001)
+        eth.send_raw_transaction.assert_not_called()
+
+    def test_arbitrage_approval_cost_is_carried_until_cycle_completes(self):
+        s = state()
+        apply_event(s, {'kind': 'APPROVE', 'deltas': {'BNB': 0}, 'gas_usd': .005, 'arb_approval': True})
+        self.assertAlmostEqual(s['arb_approval_cost_usd'], .005)
+        apply_event(s, {'kind': 'ARB', 'deltas': {'USDT': int(.1*UNIT)}, 'gas_usd': .01,
+                        'arb_asset': 'USDT', 'asset_price': 1, 'time': 123})
+        self.assertEqual(s['arb_approval_cost_usd'], 0)
+        self.assertAlmostEqual(s['realized'], .085)
 
     def test_triangle_builds_one_atomic_four_token_path(self):
         executor, ledger, eth, function = self.setup_executor()

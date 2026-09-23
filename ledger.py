@@ -38,6 +38,7 @@ def apply_event(state, event):
     if event['kind'] == 'BUY':
         state['cost'] += -quote_delta + event['gas_usd']
         state['entry'] = state['cost'] / (state['balances']['BTCB'] / 1e18)
+        state['position_peak'] = state['entry']
     elif event['kind'] == 'SELL':
         original_qty = state['balances']['BTCB']/1e18 - base_delta
         allocated_cost = state['cost'] * min(1, -base_delta/original_qty) if original_qty else 0
@@ -45,6 +46,7 @@ def apply_event(state, event):
         state['cost'] -= allocated_cost
         if not state['balances']['BTCB']:
             state['entry'] = state['cost'] = 0
+            state['position_peak'] = 0
     elif event['kind'] == 'ARB':
         asset = event['arb_asset']
         gained = event['deltas'][asset] / 1e18
@@ -55,10 +57,13 @@ def apply_event(state, event):
         # A BTCB gain remains exposed to BTCB price risk until the position is sold.
         state['realized'] += (gain_usd if asset == 'USDT' else 0.) - event['gas_usd']
         state['last_arb'] = event['time']
+        state['arb_approval_cost_usd'] = 0.
         if asset == 'BTCB' and state['balances']['BTCB']:
             state['entry'] = state['cost'] / (state['balances']['BTCB'] / 1e18)
     else:
         state['realized'] -= event['gas_usd']
+        if event['kind'] == 'APPROVE' and event.get('arb_approval'):
+            state['arb_approval_cost_usd'] = state.get('arb_approval_cost_usd', 0.) + event['gas_usd']
         if event['kind'] == 'FUND':
             state['realized'] += quote_delta - event.get('funding_usd', 0)
     if event['kind'] in ('BUY', 'SELL'):

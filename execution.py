@@ -1,5 +1,6 @@
 """Real, locally signed PancakeSwap orders, with a durable transaction journal."""
 import copy
+import math
 import time
 
 from eth_account import Account
@@ -8,7 +9,7 @@ from web3.exceptions import TransactionNotFound
 
 from ledger import apply_event
 from market import ROUTER, TOKENS, UNIT
-from arbitrage import ROUTES, ARB_GAS_CAP_USD
+from arbitrage import ROUTES, ARB_GAS_CAP_USD, MIN_NET_GAIN_USD, QUOTE_BUFFER_USD
 
 TRANSFER = Web3.keccak(text='Transfer(address,address,uint256)')
 SLIPPAGE_BPS = 50
@@ -106,6 +107,8 @@ class LiveExecutor:
         event = {'txid': pending['txid'], 'kind': kind, 'time': pending['time'], 'deltas': deltas,
                  'gas_usd': gas_bnb / UNIT * pending['bnb_price'], 'reason': pending['reason'],
                  'block': receipt['blockNumber'], 'execution': 'LIVE'}
+        if kind == 'APPROVE' and pending.get('arb_approval'):
+            event['arb_approval'] = True
         if kind == 'ARB':
             event['arb_asset'] = pending['arb_asset']
             event['asset_price'] = pending['asset_price']
@@ -158,20 +161,29 @@ class LiveExecutor:
         asset, amount = route[0], int(candidate['amount'])
         if amount <= 0 or amount > self.ledger.state['balances'][asset] or candidate['notional_usd'] > MAX_ORDER_USD:
             raise RuntimeError('Arbitrage exceeds the owned balance or $20 cap')
+        budgets = candidate['gas_budgets']
+        if any(not 0 < budgets[k] <= ARB_GAS_CAP_USD for k in ('approval', 'swap')):
+            raise ValueError('Invalid arbitrage gas budgets')
+        approval_cost = self.ledger.state.get('arb_approval_cost_usd', 0)
+        floor = budgets['approval'] + budgets['swap'] + approval_cost + MIN_NET_GAIN_USD
+        required_minimum = amount + math.ceil(floor / candidate['asset_price'] * UNIT)
+        if candidate['min_out'] < required_minimum:
+            raise ValueError('Arbitrage minimum output does not cover gas and profit target')
+        path = [TOKENS[symbol] for symbol in route]
+        # Recheck before approval too: a stale opportunity must not spend approval gas.
+        quote = self.chain.router.functions.getAmountsOut(amount, path).call()[-1]
+        buffered_minimum = amount + math.ceil((floor + QUOTE_BUFFER_USD) / candidate['asset_price'] * UNIT)
+        if quote < max(candidate['min_out'], buffered_minimum):
+            raise RuntimeError('Arbitrage quote moved below the net-profit threshold')
         token = self.chain.tokens[asset]
         allowance = token.functions.allowance(self.address, ROUTER).call()
         if allowance < amount:
             return self.submit(token.functions.approve(ROUTER, amount), 'APPROVE', market,
                                reason=f'Exact {asset} allowance for potential arbitrage',
-                               gas_budget_usd=ARB_GAS_CAP_USD)
-        path = [TOKENS[symbol] for symbol in route]
-        quote = self.chain.router.functions.getAmountsOut(amount, path).call()[-1]
-        buffered_minimum = amount + int(candidate['required_gain_usd'] / candidate['asset_price'] * UNIT)
-        if quote < max(candidate['min_out'], buffered_minimum):
-            raise RuntimeError('Arbitrage quote moved below the net-profit threshold')
+                               gas_budget_usd=budgets['approval'], metadata={'arb_approval': True})
         deadline = int(time.time()) + 60
         fn = self.chain.router.functions.swapExactTokensForTokens(
             amount, int(candidate['min_out']), path, self.address, deadline)
         return self.submit(fn, 'ARB', market, reason='Atomic '+'>'.join(route),
-                           gas_budget_usd=ARB_GAS_CAP_USD,
+                           gas_budget_usd=budgets['swap'],
                            metadata={'arb_asset': asset, 'asset_price': candidate['asset_price']})

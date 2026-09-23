@@ -5,6 +5,7 @@ three pool fees and price impact. A successful swap must return the original
 token plus a gas budget and a small profit; failed swaps can still burn gas.
 """
 import math
+import time
 
 from market import TOKENS, UNIT
 
@@ -24,22 +25,38 @@ MAX_DAILY_ARBS = 24
 ARB_COOLDOWN_SECONDS = 120
 
 
-def scan(market, balances, quote):
+def gas_budgets(market):
+    """Enforced spending caps, using current gas and 50% estimation headroom.
+
+    Always reserve approval cost even when allowance already exists. The executor
+    refuses a transaction whose padded estimate exceeds its corresponding cap.
+    """
+    unit_cost = market['gas_price'] / UNIT * market['BNB']['price']
+    return {'approval': min(ARB_GAS_CAP_USD, 80_000 * unit_cost * 1.5),
+            'swap': min(ARB_GAS_CAP_USD, 300_000 * unit_cost * 1.5)}
+
+
+def scan(market, balances, quote, approval_cost_usd=0):
     """Return the best route and an eligible candidate using exact integer quotes.
 
     quote(route, amount) must return the onchain router's final integer output.
     The trade threshold budgets two transactions even if approval already exists.
     """
-    best, errors = None, 0
+    best, errors, checked = None, 0, 0
+    budgets = gas_budgets(market)
     for asset in ('USDT', 'BTCB'):
         price = 1.0 if asset == 'USDT' else market['BTCB']['price']
-        amount = min(balances[asset], int(MAX_NOTIONAL_USD / price * UNIT))
-        notional = amount / UNIT * price
-        if notional < MIN_NOTIONAL_USD:
+        maximum = min(balances[asset], int(MAX_NOTIONAL_USD / price * UNIT))
+        if maximum / UNIT * price < MIN_NOTIONAL_USD:
             continue
-        for route in ROUTES:
+        # A smaller order can have better net gain when price impact is material.
+        amounts = sorted({maximum, min(maximum, int(10 / price * UNIT)),
+                          min(maximum, math.ceil(MIN_NOTIONAL_USD / price * UNIT))})
+        for route, amount in ((r, a) for r in ROUTES for a in amounts):
             if route[0] != asset:
                 continue
+            checked += 1
+            notional = amount / UNIT * price
             try:
                 output = int(quote(route, amount))
             except Exception:
@@ -47,26 +64,31 @@ def scan(market, balances, quote):
                 continue
             gain = (output - amount) / UNIT * price
             if best is None or gain > best['gross_gain_usd']:
-                floor = 2 * ARB_GAS_CAP_USD + MIN_NET_GAIN_USD
+                floor = sum(budgets.values()) + approval_cost_usd + MIN_NET_GAIN_USD
                 best = {'route': route, 'asset': asset, 'amount': amount,
                         'quoted_out': output, 'notional_usd': notional,
                         'gross_gain_usd': gain,
                         'min_out': amount + math.ceil(floor / price * UNIT),
                         'required_gain_usd': floor + QUOTE_BUFFER_USD,
+                        'gas_budgets': budgets, 'approval_cost_usd': approval_cost_usd,
+                        'net_gain_usd': gain - sum(budgets.values()) - approval_cost_usd,
                         'asset_price': price}
     if best is None:
         return {'status': 'No funded route' if not errors else 'Router quotes unavailable',
-                'best': None, 'candidate': None, 'errors': errors}
+                'best': None, 'candidate': None, 'errors': errors, 'quotes_checked': checked}
     candidate = best if best['gross_gain_usd'] >= best['required_gain_usd'] else None
     status = ('Qualified atomic triangle' if candidate else
               f"Best triangle {best['gross_gain_usd']:+.4f} USD before gas; "
-              f"requires at least +${best['required_gain_usd']:.2f}")
-    return {'status': status, 'best': best, 'candidate': candidate, 'errors': errors}
+              f"requires at least +${best['required_gain_usd']:.4f}")
+    return {'status': status, 'best': best, 'candidate': candidate, 'errors': errors,
+            'quotes_checked': checked}
 
 
 def chain_quote(chain, market, route, amount):
     if route not in ROUTES:
         raise ValueError('Unapproved arbitrage route')
+    if time.time() - market['time'] > 20:
+        raise RuntimeError('Arbitrage scan time budget exhausted')
     return chain.router.functions.getAmountsOut(
         amount, [TOKENS[symbol] for symbol in route]
     ).call(block_identifier=market['block'])[-1]

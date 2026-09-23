@@ -9,14 +9,18 @@ from arbitrage import (ARB_COOLDOWN_SECONDS, ARB_GAS_CAP_USD, MAX_DAILY_ARBS,
 from execution import LiveExecutor
 from ledger import Ledger, apply_event
 from market import Chain, UNIT, amount_out, candles, equity
-from strategy import action, backtest, signal
+from strategy import VERSION, action, backtest, protective_exit, signal
 
 
 class TradingBot:
-    def __init__(self, mode='paper', private_key=None, data_dir=None):
+    def __init__(self, mode='paper', private_key=None, data_dir=None, trend_entries=False, equity_floor=17.0):
         if mode not in ('paper', 'live'):
             raise ValueError('Mode must be paper or live')
         self.mode, self.chain = mode, Chain()
+        self.trend_entries = trend_entries
+        if not 0 <= equity_floor < 25:
+            raise ValueError('Equity floor must be between $0 and $25 (exclusive)')
+        self.equity_floor = equity_floor
         self.ledger = Ledger(Path(data_dir or Path(__file__).parent) / f'orbit-{mode}.sqlite3')
         self.executor = LiveExecutor(self.chain, self.ledger, private_key) if mode == 'live' else None
         self.lock = threading.RLock()
@@ -68,7 +72,7 @@ class TradingBot:
         gas = m['gas_price'] * 350_000
         gas_usd = gas / UNIT * m['BNB']['price']
         received = candidate['quoted_out'] * 9995 // 10000
-        if gas_usd > ARB_GAS_CAP_USD or received < candidate['min_out'] or s['balances']['BNB'] < gas:
+        if gas_usd > candidate['gas_budgets']['swap'] or received < candidate['min_out'] or s['balances']['BNB'] < gas:
             self.decision = 'Triangle quote did not survive simulated gas and adverse fill'
             return
         deltas = {'BNB': -gas, 'BTCB': 0, 'USDT': 0}
@@ -80,17 +84,27 @@ class TradingBot:
         self.ledger.state = s
         self.ledger.save(event)
 
+    def exit_estimate(self):
+        s, m = self.ledger.state, self.market
+        pool = m['BTCB']
+        output = amount_out(s['balances']['BTCB'], pool['base_reserve'], pool['quote_reserve'])
+        # Pool fee + full live slippage allowance + approval/swap gas estimate.
+        return output * .995 / UNIT - m['gas_price'] * 600_000 / UNIT * m['BNB']['price']
+
+    def loss_threshold(self):
+        return max(self.ledger.state['initial']*.95, getattr(self, 'equity_floor', 17.0))
+
     def decide(self):
         s, m = self.ledger.state, self.market
         if s['pending'] or s['paused']:
             self.decision = s['pause_reason'] or 'Waiting for transaction confirmations'
             return
         b = s['balances']
-        if equity(b, m) <= s['initial']*.95:
+        if equity(b, m) <= self.loss_threshold():
             s['loss_halt'] = True
             self.ledger.save()
         if s['loss_halt'] and not b['BTCB']:
-            self.set_paused(True, 'Account loss guard triggered. New entries are disabled.')
+            self.set_paused(True, f'Account loss guard (${self.loss_threshold():.2f}) triggered. Trading is disabled.')
             return
         if m['gas_price'] > 1_000_000_000:
             self.decision = 'Gas exceeds the 1 gwei limit'
@@ -104,9 +118,10 @@ class TradingBot:
             kind, reason = 'FUND', 'Prepare USDT trading capital from the initial BNB'
         else:
             kind, reason = action([r['close'] for r in self.rows], bool(b['BTCB']), m['BTCB']['price'],
-                s['entry'], s['last_trade'], time.time(), self.ledger.daily_trades(int(time.time())//86400))
+                s['entry'], s['last_trade'], time.time(), self.ledger.daily_trades(int(time.time())//86400),
+                s.get('position_peak', 0), self.exit_estimate(), s['cost'])
             if s['loss_halt']:
-                kind, reason = 'SELL', 'Account loss guard: close BTCB exposure'
+                kind, reason = 'SELL', f'Account loss guard (${self.loss_threshold():.2f}): close BTCB exposure'
             arb = getattr(self, 'arb_scan', {}).get('candidate')
             if (kind != 'SELL' and arb and not s['loss_halt'] and
                 time.time() - s.get('last_arb', 0) >= ARB_COOLDOWN_SECONDS and
@@ -118,13 +133,16 @@ class TradingBot:
                     self.paper_arb_fill(arb)
                 return
             self.decision = reason
+            if not b['BTCB'] and not getattr(self, 'trend_entries', False):
+                self.decision = 'Arbitrage entries only; experimental trend entries disabled'
+                return
             if kind == 'HOLD':
                 return
             if kind == 'BUY' and abs(m['BTCB']['price']/self.rows[-1]['close']-1) > .03:
                 self.decision = 'Onchain price differs more than 3% from the hourly reference'
                 return
             amount = min(20*UNIT, b['USDT']) if kind == 'BUY' else b['BTCB']
-            if amount/UNIT*(1 if kind == 'BUY' else m['BTCB']['price']) < 5:
+            if kind == 'BUY' and amount/UNIT < 5:
                 self.decision = 'Order below the $5 minimum; manual dust recovery may be needed'
                 return
             if b['BNB'] < m['gas_price']*600_000:
@@ -138,14 +156,8 @@ class TradingBot:
 
     def tick(self):
         market = self.chain.snapshot()
-        rows = candles() if not self.rows or time.time()-self.last_candles > 60 else None
         with self.lock:
             self.market = market
-            if rows is not None:
-                self.rows, self.last_candles = rows, time.time()
-                self.test = backtest(rows, market['gas_price']*180_000/UNIT*market['BNB']['price'])
-            if time.time()-(self.rows[-1]['time']+3600) > 3900:
-                raise RuntimeError('Candle reference is stale')
             self.initialize()
             if self.executor:
                 self.executor.reconcile()
@@ -160,19 +172,37 @@ class TradingBot:
             if time.time()-market['time'] > 30:
                 raise RuntimeError('Snapshot expired during refresh; orders deferred')
             current_balances = self.ledger.state['balances']
-            entry = self.ledger.state['entry']
-            # Protective exits must not wait for four optional router quotes.
+            s = self.ledger.state
+            entry = s['entry']
+            if current_balances['BTCB'] and market['BTCB']['price'] > s.get('position_peak', 0):
+                s['position_peak'] = market['BTCB']['price']
+                self.ledger.save()
+            # Protective exits must not wait for historical data or arbitrage quotes.
             if (current_balances['BTCB'] and entry and
-                (market['BTCB']['price'] <= entry * .98 or
-                 market['BTCB']['price'] >= entry * 1.04 or
-                 equity(current_balances, market) <= self.ledger.state['initial'] * .95)):
+                (protective_exit(market['BTCB']['price'], entry, s.get('position_peak', 0),
+                                 self.exit_estimate(), s['cost']) or
+                 equity(current_balances, market) <= self.loss_threshold())):
                 self.decide()
+                self.error = ''
+                return
+            rows = candles() if not self.rows or time.time()-self.last_candles > 60 else None
+            if rows is not None:
+                self.rows, self.last_candles = rows, time.time()
+                self.test = backtest(rows, market['gas_price']*180_000/UNIT*market['BNB']['price'])
+            if time.time()-(self.rows[-1]['time']+3600) > 3900:
+                raise RuntimeError('Candle reference is stale')
+            if current_balances['BTCB'] and signal([r['close'] for r in self.rows])[0] == 'SELL':
+                self.decide()
+                self.error = ''
                 return
             if (time.time()-getattr(self, 'last_arb_scan', 0) >= SCAN_SECONDS or
                     current_balances != getattr(self, 'last_arb_balances', None)):
                 self.arb_scan = scan(market, current_balances,
-                                     lambda route, amount: chain_quote(self.chain, market, route, amount))
+                                     lambda route, amount: chain_quote(self.chain, market, route, amount),
+                                     s.get('arb_approval_cost_usd', 0))
                 self.last_arb_scan, self.last_arb_balances = time.time(), current_balances.copy()
+            if time.time()-market['time'] > 30:
+                raise RuntimeError('Snapshot expired during arbitrage scan; orders deferred')
             self.decide()
             self.error = ''
 
@@ -202,11 +232,15 @@ class TradingBot:
         with self.lock:
             s = self.ledger.state
             if not self.market or not s:
-                return {'ready': False, 'mode': self.mode.upper(), 'error': self.error}
+                return {'ready': False, 'version': VERSION, 'mode': self.mode.upper(), 'error': self.error}
             b = self.observed if self.executor and self.observed is not None else s['balances']
             value = equity(b, self.market)
             target, fast, slow = signal([r['close'] for r in self.rows])
             return {'ready': True, 'mode': self.mode.upper(), 'wallet': s['wallet'],
+                'version': VERSION, 'position_peak': s.get('position_peak', 0),
+                'trend_entries': self.trend_entries,
+                'equity_floor_usd': self.equity_floor, 'loss_threshold_usd': self.loss_threshold(),
+                'estimated_exit_net_usd': self.exit_estimate() if b['BTCB'] else None,
                 'healthy': time.time()-self.market['time'] < 40 and not self.error,
                 'error': self.error, 'paused': s['paused'], 'pause_reason': s['pause_reason'],
                 'pending': s['pending'], 'decision': self.decision, 'market': self.market,
@@ -217,4 +251,3 @@ class TradingBot:
                 'entry': s['entry'], 'signal': target, 'fast': fast, 'slow': slow,
                 'hold': s['initial']*self.market['BTCB']['price']/s['initial_btc_price'],
                 'events': self.ledger.events(), 'candles': self.rows[-120:], 'backtest': self.test}
-

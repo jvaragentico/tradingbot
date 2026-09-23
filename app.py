@@ -134,6 +134,10 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--key-from-clipboard', action='store_true', help='Windows: read and clear a copied private key after Enter')
     parser.add_argument('--data-dir', type=Path, default=ROOT)
+    parser.add_argument('--enable-experimental-trend', action='store_true',
+                        help='Allow new trend positions; the reference backtest is unprofitable')
+    parser.add_argument('--equity-floor', type=float, default=17.0,
+                        help='USD account stop trigger; the existing 5%% guard can stop earlier (default: 17)')
     args = parser.parse_args()
     if not 1024 <= args.port <= 65535:
         parser.error('Port must be between 1024 and 65535')
@@ -150,7 +154,7 @@ if __name__ == "__main__":
     except (RuntimeError, EOFError) as exc:
         parser.exit(2, f'Unable to read a valid key: {exc}. No order worker started.\n')
     try:
-        bot = TradingBot(args.mode, key, args.data_dir)
+        bot = TradingBot(args.mode, key, args.data_dir, args.enable_experimental_trend, args.equity_floor)
     except Exception:
         parser.exit(2, 'Unable to initialize the wallet or ledger. Check local configuration; no order worker started.\n')
     key = None
