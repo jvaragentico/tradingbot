@@ -1,6 +1,6 @@
 # V1 verification — 23 September 2026
 
-- 19 unit/component tests cover the execution path on Python 3.13.7 with Web3.py 7.16.0, including refusal to start a duplicate order worker, stale data, external wallet changes, and the $22 funding cap.
+- 20 unit/component tests cover the execution path on Python 3.13.7 with Web3.py 7.16.0, including refusal to start a duplicate order worker, stale data, external wallet changes, the $22 funding cap, and clipboard key clearing and format checks.
 - GitHub Actions passed the latest published 18-test build on Linux/Python 3.12. The workflow reruns for every published update.
 - Confirmed BNB Smart Chain chain ID 56; verified PancakeSwap router factory and WBNB identities, token decimals, and both pool token sets directly through RPC.
 - Resolved BTCB/USDT V2 pool: `0x3F803EC2b816Ea7F06EC76aA2B6f2532F9892d62`.

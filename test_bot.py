@@ -198,6 +198,20 @@ class ExecutionTests(unittest.TestCase):
             with self.assertRaises(OSError): app.serve(worker)
         worker.start.assert_not_called()
 
+    def test_clipboard_key_is_cleared_and_seed_words_rejected(self):
+        import app
+        import sys
+        key = '0x' + '1' * 64
+        root = Mock()
+        root.clipboard_get.return_value = key
+        fake_tk = SimpleNamespace(Tk=Mock(return_value=root), TclError=Exception)
+        with patch.object(app.os, 'name', 'nt'), patch('builtins.input'), patch.dict(sys.modules, {'tkinter': fake_tk}):
+            self.assertEqual(app.key_from_clipboard(), key)
+            root.clipboard_get.return_value = 'twelve seed words are not an account private key'
+            with self.assertRaises(RuntimeError):
+                app.key_from_clipboard()
+        self.assertEqual(root.clipboard_clear.call_count, 2)
+
     def test_router_abi_and_local_signature(self):
         w3 = Web3()
         router = w3.eth.contract(address=ROUTER, abi=ROUTER_ABI)

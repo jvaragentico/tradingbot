@@ -7,6 +7,7 @@ import mimetypes
 import argparse
 import getpass
 import os
+import re
 import secrets
 import sys
 import socket
@@ -24,6 +25,28 @@ ROOT = Path(__file__).parent
 bot = None
 CONTROL_TOKEN = secrets.token_urlsafe(32)
 PORT = 8765
+
+
+def key_from_clipboard():
+    """Consume a copied account key without asking Windows getpass to handle paste."""
+    if os.name != 'nt':
+        raise RuntimeError('Clipboard key input is supported only on Windows')
+    input('Copy the account private key in your wallet app, then return here and press Enter. Do not paste it here: ')
+    import tkinter
+    try:
+        root = tkinter.Tk()
+        root.withdraw()
+        try:
+            value = root.clipboard_get().strip()
+            root.clipboard_clear()
+            root.update()
+        finally:
+            root.destroy()
+    except tkinter.TclError as exc:
+        raise RuntimeError('Clipboard text is unavailable') from exc
+    if not re.fullmatch(r'(?:0x)?[0-9a-fA-F]{64}', value):
+        raise RuntimeError('Clipboard did not contain a 64-digit hexadecimal account private key')
+    return value
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -109,16 +132,23 @@ if __name__ == "__main__":
     parser.add_argument('--accept-loss-risk', action='store_true')
     parser.add_argument('--expected-wallet', help='Public 0x address that the local signing key must match')
     parser.add_argument('--port', type=int, default=8765)
+    parser.add_argument('--key-from-clipboard', action='store_true', help='Windows: read and clear a copied private key after Enter')
     parser.add_argument('--data-dir', type=Path, default=ROOT)
     args = parser.parse_args()
     if not 1024 <= args.port <= 65535:
         parser.error('Port must be between 1024 and 65535')
+    if args.key_from_clipboard and (args.mode != 'live' or not args.expected_wallet):
+        parser.error('Clipboard key input requires live mode and --expected-wallet')
     PORT = args.port
     if args.mode == 'live' and not args.accept_loss_risk:
         parser.error('Live trading can lose funds. Use --accept-loss-risk only after reviewing the tests and README.')
     args.data_dir.mkdir(parents=True, exist_ok=True)
     # No key is accepted over HTTP or written into the repository. Never paste a seed phrase here.
-    key = (os.environ.pop('BOT_PRIVATE_KEY', None) or getpass.getpass('Dedicated bot wallet private key (hidden): ')) if args.mode == 'live' else None
+    try:
+        key = (key_from_clipboard() if args.key_from_clipboard else
+               (os.environ.pop('BOT_PRIVATE_KEY', None) or getpass.getpass('Dedicated bot wallet private key (hidden): '))) if args.mode == 'live' else None
+    except (RuntimeError, EOFError) as exc:
+        parser.exit(2, f'Unable to read a valid key: {exc}. No order worker started.\n')
     try:
         bot = TradingBot(args.mode, key, args.data_dir)
     except Exception:
