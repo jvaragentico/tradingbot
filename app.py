@@ -106,6 +106,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', choices=['paper', 'live'], default='paper')
     parser.add_argument('--accept-loss-risk', action='store_true')
+    parser.add_argument('--expected-wallet', help='Public 0x address that the local signing key must match')
     parser.add_argument('--data-dir', type=Path, default=ROOT)
     args = parser.parse_args()
     if args.mode == 'live' and not args.accept_loss_risk:
@@ -118,6 +119,8 @@ if __name__ == "__main__":
     except Exception:
         parser.exit(2, 'Unable to initialize the wallet or ledger. Check local configuration; no order worker started.\n')
     key = None
+    if args.mode == 'live' and args.expected_wallet and bot.executor.address.lower() != args.expected_wallet.lower():
+        parser.exit(2, 'Signing key does not match the expected public wallet. No order worker started.\n')
     try:
         serve(bot)
     except OSError:
