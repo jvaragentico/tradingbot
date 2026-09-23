@@ -5,11 +5,12 @@ import time
 import uuid
 from pathlib import Path
 from arbitrage import (ARB_COOLDOWN_SECONDS, ARB_GAS_CAP_USD, MAX_DAILY_ARBS,
-                       SCAN_SECONDS, chain_quote, scan)
+                       SCAN_SECONDS, scan_markets)
 from execution import LiveExecutor
 from ledger import Ledger, apply_event
 from market import Chain, UNIT, amount_out, candles, equity
 from strategy import VERSION, action, backtest, protective_exit, signal
+from v3 import V3Markets
 
 
 class TradingBot:
@@ -17,6 +18,7 @@ class TradingBot:
         if mode not in ('paper', 'live'):
             raise ValueError('Mode must be paper or live')
         self.mode, self.chain = mode, Chain()
+        self.v3 = self.chain.v3 = V3Markets(self.chain)
         self.trend_entries = trend_entries
         if not 0 <= equity_floor < 25:
             raise ValueError('Equity floor must be between $0 and $25 (exclusive)')
@@ -26,9 +28,11 @@ class TradingBot:
         self.lock = threading.RLock()
         self.market, self.rows, self.test, self.observed = {}, [], {}, None
         self.error, self.decision, self.last_candles = '', 'Waiting for fresh market data', 0
+        self.reference_error = 'Waiting for historical reference'
         self.arb_scan, self.last_arb_scan, self.last_arb_balances = {}, 0, None
         self.stop_event = threading.Event()
         self.worker = threading.Thread(target=self.loop, daemon=True)
+        self.reference_worker = threading.Thread(target=self.reference_loop, daemon=True)
 
     def initialize(self):
         s = self.ledger.state
@@ -80,6 +84,7 @@ class TradingBot:
         event = {'txid': 'paper-'+uuid.uuid4().hex, 'time': time.time(), 'kind': 'ARB',
                  'deltas': deltas, 'gas_usd': gas_usd, 'reason': 'Atomic '+'>'.join(candidate['route']),
                  'execution': 'PAPER', 'arb_asset': asset, 'asset_price': candidate['asset_price']}
+        event['venue'] = candidate.get('venue', 'V2')
         apply_event(s, event)
         self.ledger.state = s
         self.ledger.save(event)
@@ -117,12 +122,15 @@ class TradingBot:
                 return
             kind, reason = 'FUND', 'Prepare USDT trading capital from the initial BNB'
         else:
-            kind, reason = action([r['close'] for r in self.rows], bool(b['BTCB']), m['BTCB']['price'],
+            closes = [r['close'] for r in self.rows] if self.reference_fresh() else []
+            kind, reason = action(closes, bool(b['BTCB']), m['BTCB']['price'],
                 s['entry'], s['last_trade'], time.time(), self.ledger.daily_trades(int(time.time())//86400),
                 s.get('position_peak', 0), self.exit_estimate(), s['cost'])
             if s['loss_halt']:
                 kind, reason = 'SELL', f'Account loss guard (${self.loss_threshold():.2f}): close BTCB exposure'
             arb = getattr(self, 'arb_scan', {}).get('candidate')
+            if arb and time.time()-arb.get('quoted_at', m['time']) > 30:
+                arb = None
             if (kind != 'SELL' and arb and not s['loss_halt'] and
                 time.time() - s.get('last_arb', 0) >= ARB_COOLDOWN_SECONDS and
                 self.ledger.daily_arbs(int(time.time())//86400) < MAX_DAILY_ARBS):
@@ -140,6 +148,9 @@ class TradingBot:
                 return
             if kind == 'BUY' and abs(m['BTCB']['price']/self.rows[-1]['close']-1) > .03:
                 self.decision = 'Onchain price differs more than 3% from the hourly reference'
+                return
+            if kind == 'BUY' and not self.reference_fresh():
+                self.decision = 'Trend entry blocked: historical reference is stale'
                 return
             amount = min(20*UNIT, b['USDT']) if kind == 'BUY' else b['BTCB']
             if kind == 'BUY' and amount/UNIT < 5:
@@ -178,33 +189,46 @@ class TradingBot:
                 s['position_peak'] = market['BTCB']['price']
                 self.ledger.save()
             # Protective exits must not wait for historical data or arbitrage quotes.
-            if (current_balances['BTCB'] and entry and
-                (protective_exit(market['BTCB']['price'], entry, s.get('position_peak', 0),
-                                 self.exit_estimate(), s['cost']) or
-                 equity(current_balances, market) <= self.loss_threshold())):
+            if (equity(current_balances, market) <= self.loss_threshold() or
+                (current_balances['BTCB'] and entry and protective_exit(
+                    market['BTCB']['price'], entry, s.get('position_peak', 0), self.exit_estimate(), s['cost']))):
                 self.decide()
                 self.error = ''
                 return
-            rows = candles() if not self.rows or time.time()-self.last_candles > 60 else None
-            if rows is not None:
-                self.rows, self.last_candles = rows, time.time()
-                self.test = backtest(rows, market['gas_price']*180_000/UNIT*market['BNB']['price'])
-            if time.time()-(self.rows[-1]['time']+3600) > 3900:
-                raise RuntimeError('Candle reference is stale')
-            if current_balances['BTCB'] and signal([r['close'] for r in self.rows])[0] == 'SELL':
+            if current_balances['BTCB'] and self.reference_fresh() and signal([r['close'] for r in self.rows])[0] == 'SELL':
                 self.decide()
                 self.error = ''
                 return
             if (time.time()-getattr(self, 'last_arb_scan', 0) >= SCAN_SECONDS or
                     current_balances != getattr(self, 'last_arb_balances', None)):
-                self.arb_scan = scan(market, current_balances,
-                                     lambda route, amount: chain_quote(self.chain, market, route, amount),
-                                     s.get('arb_approval_cost_usd', 0))
+                self.arb_scan = scan_markets(self.chain, self.v3, market, current_balances,
+                                             s.get('arb_approval_cost_usd', 0))
                 self.last_arb_scan, self.last_arb_balances = time.time(), current_balances.copy()
             if time.time()-market['time'] > 30:
                 raise RuntimeError('Snapshot expired during arbitrage scan; orders deferred')
             self.decide()
-            self.error = ''
+            self.error = ('No usable arbitrage quotes; check venue status' if
+                          self.arb_scan.get('errors') and not self.arb_scan.get('best') else '')
+
+    def reference_fresh(self):
+        return bool(self.rows and 'time' in self.rows[-1] and
+                    time.time()-(self.rows[-1]['time']+3600) <= 3900)
+
+    def reference_loop(self):
+        # This optional API must never hold up market checks, stops, or arbitrage.
+        while not self.stop_event.is_set():
+            try:
+                rows = candles()
+                with self.lock:
+                    market = copy.deepcopy(self.market)
+                test = backtest(rows, market['gas_price']*180_000/UNIT*market['BNB']['price']) if market else {}
+                with self.lock:
+                    self.rows, self.test = rows, test
+                    self.last_candles, self.reference_error = time.time(), ''
+            except Exception:
+                with self.lock:
+                    self.reference_error = 'Historical reference unavailable; trend entries disabled'
+            self.stop_event.wait(60)
 
     def loop(self):
         while not self.stop_event.is_set():
@@ -216,6 +240,7 @@ class TradingBot:
             self.stop_event.wait(10)
 
     def start(self):
+        self.reference_worker.start()
         self.worker.start()
 
     def set_paused(self, paused, reason='Manually paused'):
@@ -239,6 +264,9 @@ class TradingBot:
             return {'ready': True, 'mode': self.mode.upper(), 'wallet': s['wallet'],
                 'version': VERSION, 'position_peak': s.get('position_peak', 0),
                 'trend_entries': self.trend_entries,
+                'target_equity_usd': 27.0, 'target_gap_usd': max(0, 27.0-value),
+                'performance': self.ledger.performance(),
+                'reference_error': self.reference_error,
                 'equity_floor_usd': self.equity_floor, 'loss_threshold_usd': self.loss_threshold(),
                 'estimated_exit_net_usd': self.exit_estimate() if b['BTCB'] else None,
                 'healthy': time.time()-self.market['time'] < 40 and not self.error,

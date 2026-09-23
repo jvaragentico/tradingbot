@@ -44,16 +44,26 @@ async function refresh(){
     const b=s.backtest;if(b.end_usd!=null){text('test-range',date(b.start).toLocaleDateString()+' – '+date(b.end).toLocaleDateString());text('test-end',usd(b.end_usd));text('test-profit',signed(b.end_usd-22)+' from $22 cash');$('test-profit').className='sub '+(b.end_usd>=22?'positive':'negative');text('test-hold',usd(b.hold_end_usd));text('test-stats',b.trade_count+' / '+b.max_drawdown_pct.toFixed(2)+'%');text('test-halted',b.halted?'Triggered':'Not triggered');text('test-notes',b.assumptions)}
     text('equity-floor',s.equity_floor_usd==null?'Restart to load $17 floor':usd(s.equity_floor_usd));
     text('loss-threshold',s.loss_threshold_usd==null?usd(s.initial*.95):usd(s.loss_threshold_usd));
-    text('trail-rule',s.version==='1.2'?'1% pullback, cost checked':'Restart to enable');
-    text('strategy-policy',s.trend_entries===false?'Arbitrage entries + management of existing holdings. This test evaluates the optional trend strategy.':s.version==='1.2'?'Experimental trend entries enabled':'V1.1 still running; restart locally to load v1.2.');
+    text('trail-rule',['1.2','1.3'].includes(s.version)?'1% pullback, cost checked':'Restart to enable');
+    text('strategy-policy',s.trend_entries===false?'Arbitrage entries + management of existing holdings. This test evaluates the optional trend strategy.':['1.2','1.3'].includes(s.version)?'Experimental trend entries enabled':'V1.1 still running; restart locally to load v1.2.');
     const arb=s.arbitrage||{}, best=arb.best;
     text('arb-state',arb.candidate?'QUALIFIED':best?'NO EDGE':'WAITING');
     text('arb-route',best?best.route.join(' > '):'No funded route yet');
+    text('arb-venue',best?(best.venue||'V2')+' / '+(best.pool_fee_pct??.75).toFixed(2)+'%':'—');
+    const v3=arb.venues?.V3; text('arb-universe',v3?.pairs?v3.pools+' pools / '+v3.pairs.join(', '):'Restart to load expanded markets');
+    text('venue-errors',Object.entries(arb.venues||{}).filter(([_,v])=>v.error||v.errors).map(([k,v])=>k+': '+(v.error||v.errors+' unavailable quotes')).join(' · '));
     text('arb-gain',best?best.gross_gain_usd.toFixed(4)+' USD':'—');
     text('arb-required',best?'+'+best.required_gain_usd.toFixed(4)+' USD':'—');
     text('arb-net',best?.net_gain_usd==null?'Available after restart':signed(best.net_gain_usd)+' / '+usd(best.notional_usd));
     text('arb-count',arb.quotes_checked==null?'Available after restart':arb.quotes_checked+' / '+arb.errors);
     text('arb-reason',arb.status||'Restart this bot process to enable the new 24-hour arbitrage scanner.');
+    const perf=s.performance;
+    text('target-progress',usd(s.target_equity_usd??27)+' / '+usd(s.target_gap_usd??Math.max(0,27-s.equity))+' to go');
+    text('position-count',perf?perf.closed_positions+' / '+perf.winning_positions:'Available after v1.3 restart');
+    text('position-pnl',perf?signed(perf.closed_position_pnl_usd):'—');
+    text('arb-performance',perf?perf.arbitrage_cycles+' / '+perf.positive_arbitrage_cycles:'—');
+    text('total-gas',perf?usd(perf.gas_spent_usd,4):'—');
+    text('reference-status',s.reference_error||'Historical reference available. Arbitrage and risk checks run independently.');
     draw(s.candles);text('footer-time','Refreshed '+new Date().toLocaleTimeString());
   }catch(e){$('error').hidden=false;text('error',String(e));text('connection','DISCONNECTED');$('connection').className='status-dot bad'}finally{busy=false}
 }

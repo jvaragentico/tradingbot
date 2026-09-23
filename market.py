@@ -6,14 +6,20 @@ import urllib.request
 
 from web3 import Web3
 from web3.middleware import ExtraDataToPOAMiddleware
+from rpc import ReadFailoverProvider, batch_read
 
 RPC_URL = os.environ.get('BSC_RPC_URL', 'https://bsc-dataseed.bnbchain.org')
+RPC_URLS = list(dict.fromkeys([RPC_URL, 'https://bsc-dataseed-public.bnbchain.org',
+                              'https://bsc-dataseed.nariox.org']))
 ROUTER = Web3.to_checksum_address('0x10ed43c718714eb63d5aa57b78b54704e256024e')
 FACTORY = Web3.to_checksum_address('0xca143ce32fe78f1f7019d7d551a6402fc5350c73')
 TOKENS = {k: Web3.to_checksum_address(v) for k, v in {
     'BTCB': '0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c',
     'USDT': '0x55d398326f99059ff775485246999027b3197955',
     'BNB': '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c',
+    'ETH': '0x2170ed0880ac9a755fd29b2688956bd959f933f8',
+    'USDC': '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d',
+    'CAKE': '0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82',
 }.items()}
 UNIT = 10**18
 
@@ -38,12 +44,15 @@ PAIR_ABI = [abi_function('token0', [], ['address']), abi_function('token1', [], 
 
 class Chain:
     def __init__(self):
-        self.w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={'timeout': 12}))
+        self.w3 = Web3(ReadFailoverProvider(RPC_URLS))
         self.w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
         self.router = self.w3.eth.contract(address=ROUTER, abi=ROUTER_ABI)
         self.tokens = {k: self.w3.eth.contract(address=v, abi=TOKEN_ABI) for k, v in TOKENS.items()}
         self.pools = {}
         self.checked = False
+
+    def batch(self, functions, block='latest'):
+        return batch_read(self.w3, functions, block)
 
     def verify(self):
         if self.checked:
@@ -62,7 +71,7 @@ class Chain:
             if {token0, token1} != {TOKENS[symbol], TOKENS['USDT']}:
                 raise RuntimeError('Pool token mismatch')
             self.pools[symbol] = (pair, token0 == TOKENS[symbol])
-        if any(token.functions.decimals().call() != 18 for token in self.tokens.values()):
+        if any(value != (18,) for value in self.batch([t.functions.decimals() for t in self.tokens.values()])):
             raise RuntimeError('Unexpected token decimals')
         self.checked = True
 
@@ -73,8 +82,11 @@ class Chain:
             raise RuntimeError('RPC block is stale or local clock is wrong')
         result = {'time': time.time(), 'block': block['number'], 'block_time': block['timestamp'],
                   'gas_price': self.w3.eth.gas_price}
-        for symbol, (pair, base_first) in self.pools.items():
-            a, b, _ = pair.functions.getReserves().call(block_identifier=block['number'])
+        reserves = self.batch([pair.functions.getReserves() for pair, _ in self.pools.values()], block['number'])
+        for (symbol, (pair, base_first)), values in zip(self.pools.items(), reserves):
+            if values is None:
+                raise RuntimeError('Required pool reserves unavailable')
+            a, b, _ = values
             base, quote = (a, b) if base_first else (b, a)
             if not base or quote / UNIT < 50_000:
                 raise RuntimeError('Pool liquidity below the $100,000 safety floor')
@@ -83,9 +95,14 @@ class Chain:
 
     def balances(self, address):
         block = self.w3.eth.block_number
-        return {'BNB': self.w3.eth.get_balance(address, block),
-                'USDT': self.tokens['USDT'].functions.balanceOf(address).call(block_identifier=block),
-                'BTCB': self.tokens['BTCB'].functions.balanceOf(address).call(block_identifier=block)}
+        from rpc import MULTICALL
+        native = self.w3.eth.contract(address=MULTICALL, abi=[abi_function('getEthBalance', ['address'], ['uint256'])])
+        values = self.batch([native.functions.getEthBalance(address),
+                             self.tokens['USDT'].functions.balanceOf(address),
+                             self.tokens['BTCB'].functions.balanceOf(address)], block)
+        if any(v is None for v in values):
+            raise RuntimeError('Wallet balance batch is incomplete')
+        return dict(zip(('BNB', 'USDT', 'BTCB'), (v[0] for v in values)))
 
 
 def candles():

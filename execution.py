@@ -10,6 +10,7 @@ from web3.exceptions import TransactionNotFound
 from ledger import apply_event
 from market import ROUTER, TOKENS, UNIT
 from arbitrage import ROUTES, ARB_GAS_CAP_USD, MIN_NET_GAIN_USD, QUOTE_BUFFER_USD
+from v3 import ROUTER_V3, V3Markets, encode_path
 
 TRANSFER = Web3.keccak(text='Transfer(address,address,uint256)')
 SLIPPAGE_BPS = 50
@@ -22,7 +23,7 @@ def transfer_deltas(receipt, address):
     """Read actual ERC20 amounts from receipt logs, rather than treating a quote as a fill."""
     deltas = {'BNB': 0, 'BTCB': 0, 'USDT': 0}
     wallet = address.lower()[2:].rjust(64, '0')
-    symbols = {v.lower(): k for k, v in TOKENS.items() if k != 'BNB'}
+    symbols = {v.lower(): k for k, v in TOKENS.items() if k in ('BTCB', 'USDT')}
     for log in receipt['logs']:
         symbol = symbols.get(log['address'].lower())
         topics = log['topics']
@@ -110,6 +111,7 @@ class LiveExecutor:
         if kind == 'APPROVE' and pending.get('arb_approval'):
             event['arb_approval'] = True
         if kind == 'ARB':
+            event['venue'] = pending.get('venue', 'V2')
             event['arb_asset'] = pending['arb_asset']
             event['asset_price'] = pending['asset_price']
             if deltas[event['arb_asset']] <= 0:
@@ -154,12 +156,21 @@ class LiveExecutor:
         return self.submit(fn, kind, market, value=amount if source == 'BNB' else 0, reason=reason)
 
     def arbitrage(self, candidate, market):
-        """One router transaction traverses three pools and returns the same token."""
+        """One allowlisted router transaction returns the starting token."""
         route = tuple(candidate['route'])
-        if route not in ROUTES or route[0] != route[-1]:
+        venue = candidate.get('venue', 'V2')
+        v3, encoded = None, None
+        if venue == 'V3':
+            encoded = encode_path(route, candidate['fees'])
+            v3 = getattr(self.chain, 'v3', None) or V3Markets(self.chain)
+            v3.verify()
+        elif venue != 'V2' or route not in ROUTES or route[0] != route[-1]:
             raise ValueError('Unapproved arbitrage route')
+        if time.time()-candidate.get('quoted_at', market['time']) > 30:
+            raise RuntimeError('Arbitrage candidate expired')
         asset, amount = route[0], int(candidate['amount'])
-        if amount <= 0 or amount > self.ledger.state['balances'][asset] or candidate['notional_usd'] > MAX_ORDER_USD:
+        price = 1.0 if asset == 'USDT' else market['BTCB']['price']
+        if amount <= 0 or amount > self.ledger.state['balances'][asset] or amount/UNIT*price > MAX_ORDER_USD + 1e-8:
             raise RuntimeError('Arbitrage exceeds the owned balance or $20 cap')
         budgets = candidate['gas_budgets']
         if any(not 0 < budgets[k] <= ARB_GAS_CAP_USD for k in ('approval', 'swap')):
@@ -171,19 +182,22 @@ class LiveExecutor:
             raise ValueError('Arbitrage minimum output does not cover gas and profit target')
         path = [TOKENS[symbol] for symbol in route]
         # Recheck before approval too: a stale opportunity must not spend approval gas.
-        quote = self.chain.router.functions.getAmountsOut(amount, path).call()[-1]
+        quote = (v3.quoter.functions.quoteExactInput(encoded, amount).call()[0] if v3 else
+                 self.chain.router.functions.getAmountsOut(amount, path).call()[-1])
         buffered_minimum = amount + math.ceil((floor + QUOTE_BUFFER_USD) / candidate['asset_price'] * UNIT)
         if quote < max(candidate['min_out'], buffered_minimum):
             raise RuntimeError('Arbitrage quote moved below the net-profit threshold')
         token = self.chain.tokens[asset]
-        allowance = token.functions.allowance(self.address, ROUTER).call()
+        spender = ROUTER_V3 if v3 else ROUTER
+        allowance = token.functions.allowance(self.address, spender).call()
         if allowance < amount:
-            return self.submit(token.functions.approve(ROUTER, amount), 'APPROVE', market,
-                               reason=f'Exact {asset} allowance for potential arbitrage',
+            return self.submit(token.functions.approve(spender, amount), 'APPROVE', market,
+                               reason=f'Exact {asset} allowance for potential {venue} arbitrage',
                                gas_budget_usd=budgets['approval'], metadata={'arb_approval': True})
         deadline = int(time.time()) + 60
-        fn = self.chain.router.functions.swapExactTokensForTokens(
-            amount, int(candidate['min_out']), path, self.address, deadline)
-        return self.submit(fn, 'ARB', market, reason='Atomic '+'>'.join(route),
+        fn = (v3.router.functions.exactInput((encoded, self.address, deadline, amount, int(candidate['min_out'])))
+              if v3 else self.chain.router.functions.swapExactTokensForTokens(
+                  amount, int(candidate['min_out']), path, self.address, deadline))
+        return self.submit(fn, 'ARB', market, reason=f'Atomic {venue} '+'>'.join(route),
                            gas_budget_usd=budgets['swap'],
-                           metadata={'arb_asset': asset, 'asset_price': candidate['asset_price']})
+                           metadata={'arb_asset': asset, 'asset_price': candidate['asset_price'], 'venue': venue})

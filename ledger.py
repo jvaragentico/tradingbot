@@ -27,6 +27,35 @@ class Ledger:
     def daily_arbs(self, day):
         return sum(e['kind'] == 'ARB' and int(e['time'])//86400 == day for e in self.events())
 
+    def performance(self):
+        """Completed positions are separate from fills, approvals, and funding."""
+        cost, waiting_fee, closed, arbs, gas = 0., 0., [], [], 0.
+        arb_approval = 0.
+        for (raw,) in self.db.execute('SELECT data FROM events ORDER BY rowid'):
+            e = json.loads(raw)
+            kind, fee = e['kind'], e['gas_usd']
+            gas += fee
+            if kind == 'APPROVE':
+                if e.get('arb_approval'):
+                    arb_approval += fee
+                elif cost:
+                    cost += fee
+                else:
+                    waiting_fee += fee
+            elif kind == 'BUY':
+                cost += -e['deltas']['USDT']/1e18 + fee + waiting_fee
+                waiting_fee = 0.
+            elif kind == 'SELL':
+                closed.append(e['deltas']['USDT']/1e18 - fee - cost)
+                cost = 0.
+            elif kind == 'ARB':
+                arbs.append(e['deltas'][e['arb_asset']]/1e18*e['asset_price'] - fee - arb_approval)
+                arb_approval = 0.
+        return {'closed_positions': len(closed), 'winning_positions': sum(v > 0 for v in closed),
+                'closed_position_pnl_usd': sum(closed), 'arbitrage_cycles': len(arbs),
+                'positive_arbitrage_cycles': sum(v > 0 for v in arbs),
+                'arbitrage_gain_at_fill_usd': sum(arbs), 'gas_spent_usd': gas}
+
 
 def apply_event(state, event):
     for asset, delta in event['deltas'].items():

@@ -1,0 +1,185 @@
+[
+  {
+    "elapsed": 5.11,
+    "block": 123590773,
+    "scan": {
+      "status": "Best round trip -0.0230 USD after gas budget; no qualifying edge",
+      "best": {
+        "route": [
+          "USDT",
+          "USDC",
+          "USDT"
+        ],
+        "asset": "USDT",
+        "amount": 5000000000000000000,
+        "quoted_out": 4998826144228404289,
+        "notional_usd": 5.0,
+        "gross_gain_usd": -0.001173855771595711,
+        "min_out": 5041799265420356952,
+        "required_gain_usd": 0.06179926542035695,
+        "gas_budgets": {
+          "approval": 0.004589319035864622,
+          "swap": 0.01720994638449233
+        },
+        "approval_cost_usd": 0,
+        "asset_price": 1.0,
+        "net_gain_usd": -0.022973121191952665,
+        "venue": "V3",
+        "pool_fee_pct": 0.06,
+        "quoted_at": 1790178074.925744,
+        "block": 123590773,
+        "fees": [
+          100,
+          500
+        ]
+      },
+      "candidate": null,
+      "errors": 0,
+      "quotes_checked": 27,
+      "venues": {
+        "V2": {
+          "quotes_checked": 24,
+          "errors": 0
+        },
+        "V3": {
+          "status": "Best round trip -0.0230 USD after gas budget; no qualifying edge",
+          "errors": 0,
+          "quotes_checked": 3,
+          "venue": "V3",
+          "pools": 10,
+          "routes_screened": 12,
+          "pairs": [
+            "BNB",
+            "BTCB",
+            "CAKE",
+            "ETH",
+            "USDC"
+          ]
+        }
+      },
+      "scanned_at": 1790178079.7655563
+    }
+  },
+  {
+    "elapsed": 5.11,
+    "block": 123590785,
+    "scan": {
+      "status": "Best round trip -0.0230 USD after gas budget; no qualifying edge",
+      "best": {
+        "route": [
+          "USDT",
+          "USDC",
+          "USDT"
+        ],
+        "asset": "USDT",
+        "amount": 5000000000000000000,
+        "quoted_out": 4998826123337173804,
+        "notional_usd": 5.0,
+        "gross_gain_usd": -0.001173876662826196,
+        "min_out": 5041799172220385848,
+        "required_gain_usd": 0.06179917222038585,
+        "gas_budgets": {
+          "approval": 0.004589299414818073,
+          "swap": 0.017209872805567773
+        },
+        "approval_cost_usd": 0,
+        "asset_price": 1.0,
+        "net_gain_usd": -0.022973048883212045,
+        "venue": "V3",
+        "pool_fee_pct": 0.06,
+        "quoted_at": 1790178080.035901,
+        "block": 123590785,
+        "fees": [
+          100,
+          500
+        ]
+      },
+      "candidate": null,
+      "errors": 0,
+      "quotes_checked": 27,
+      "venues": {
+        "V2": {
+          "quotes_checked": 24,
+          "errors": 0
+        },
+        "V3": {
+          "status": "Best round trip -0.0230 USD after gas budget; no qualifying edge",
+          "errors": 0,
+          "quotes_checked": 3,
+          "venue": "V3",
+          "pools": 10,
+          "routes_screened": 12,
+          "pairs": [
+            "BNB",
+            "BTCB",
+            "CAKE",
+            "ETH",
+            "USDC"
+          ]
+        }
+      },
+      "scanned_at": 1790178084.8768854
+    }
+  },
+  {
+    "elapsed": 5.13,
+    "block": 123590796,
+    "scan": {
+      "status": "Best round trip -0.0230 USD after gas budget; no qualifying edge",
+      "best": {
+        "route": [
+          "USDT",
+          "USDC",
+          "USDT"
+        ],
+        "asset": "USDT",
+        "amount": 5000000000000000000,
+        "quoted_out": 4998826131601192974,
+        "notional_usd": 5.0,
+        "gross_gain_usd": -0.001173868398807026,
+        "min_out": 5041798919974720848,
+        "required_gain_usd": 0.06179891997472085,
+        "gas_budgets": {
+          "approval": 0.0045892463104675475,
+          "swap": 0.017209673664253307
+        },
+        "approval_cost_usd": 0,
+        "asset_price": 1.0,
+        "net_gain_usd": -0.02297278837352788,
+        "venue": "V3",
+        "pool_fee_pct": 0.06,
+        "quoted_at": 1790178085.1508598,
+        "block": 123590796,
+        "fees": [
+          100,
+          500
+        ]
+      },
+      "candidate": null,
+      "errors": 0,
+      "quotes_checked": 27,
+      "venues": {
+        "V2": {
+          "quotes_checked": 24,
+          "errors": 0
+        },
+        "V3": {
+          "status": "Best round trip -0.0230 USD after gas budget; no qualifying edge",
+          "errors": 0,
+          "quotes_checked": 3,
+          "venue": "V3",
+          "pools": 10,
+          "routes_screened": 12,
+          "pairs": [
+            "BNB",
+            "BTCB",
+            "CAKE",
+            "ETH",
+            "USDC"
+          ]
+        }
+      },
+      "scanned_at": 1790178090.0039816
+    }
+  }
+]
