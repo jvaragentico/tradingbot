@@ -2,7 +2,7 @@
 
 An automated BTCB/USDT spot trading bot on BNB Smart Chain, using PancakeSwap V2. BNB is the initial capital and gas asset. After a one-time funding conversion, the strategy buys and sells BTCB. No Binance account is needed. BTCB is a token representing Bitcoin exposure on BNB Chain; it is not native Bitcoin.
 
-**Status:** paper mode is running locally. Live transaction construction, local signing, broadcast, receipt reconciliation and actual-fill accounting are implemented. The public wallet address was checked and holds about $22.78 in BNB as of September 23, 2026, but no signing key was provided, so a real-money buy/sell cycle has **not** been run. The baseline strategy is experimental and its initial historical test lost money. This is a review prototype, not an audited production system.
+**Status:** paper mode is running locally. Live transaction construction, local signing, broadcast, receipt reconciliation and actual-fill accounting are implemented. The current public wallet `0x3062dffa74ec3b8c232a2ae2799e1565702687df` was checked and held about $22.80 in BNB as of September 23, 2026, but no signing key was provided, so a real-money buy/sell cycle has **not** been run. The baseline strategy is experimental and its initial historical test lost money. This is a review prototype, not an audited production system.
 
 ## Start
 
@@ -26,12 +26,12 @@ For this Windows computer and the checked public wallet, follow [RUN_LIVE.md](RU
 3. Run this in another terminal. Port 8766 keeps the review dashboard on 8765 available:
 
 ```powershell
-python app.py --mode live --accept-loss-risk --expected-wallet 0x9D7CC5DAC432Ac61303552Cd8835fF34Aa2C39Ab --port 8766
+python app.py --mode live --accept-loss-risk --expected-wallet 0x3062dffa74ec3b8c232a2ae2799e1565702687df --port 8766 --key-from-clipboard
 ```
 
-4. Enter the dedicated wallet's private key in the hidden **local terminal prompt**. The process checks that it matches the expected public address before starting its worker. Do not enter a seed phrase. Never paste the key into chat, the dashboard, a GitHub file, or a command argument. Alternatively an operator can provide `BOT_PRIVATE_KEY` through a secure process environment.
+4. When prompted, copy the dedicated wallet's private key in the wallet app, return to PowerShell and press Enter without pasting. The process reads and clears the clipboard, then checks that the key matches the expected public address before starting its worker. Do not enter a seed phrase. Never paste the key into chat, the dashboard, a GitHub file, or a command argument. Alternatively an operator can provide `BOT_PRIVATE_KEY` through a secure process environment.
 
-On Windows, Python's hidden prompt may not accept paste. Add `--key-from-clipboard` to the live command. When prompted, copy the account private key in the wallet app, return to PowerShell, and press Enter **without pasting**. The bot reads the clipboard once, clears it, validates the private-key format and verifies the expected public address before starting the worker. Clipboard contents can be exposed to other local apps or clipboard-history tools while copied.
+On Windows, Python's hidden prompt may not accept paste. The live command above uses `--key-from-clipboard` to avoid that issue. Clipboard contents can be exposed to other local apps or clipboard-history tools while copied.
 
 Starting with these flags authorizes the worker to act automatically. It may fund USDT immediately, then trade when a signal qualifies. Open http://127.0.0.1:8766 and verify the dashboard says **LIVE MODE**. Confirmed actions link to their BscScan transaction hashes. The key is used only in process memory for local signing and is not transmitted to the RPC or dashboard. A compromised host can still steal a key in memory.
 

@@ -1,6 +1,6 @@
 # Run Orbit on this Windows computer
 
-The public wallet `0x9D7CC5DAC432Ac61303552Cd8835fF34Aa2C39Ab` held 0.029066815 BNB (about $22.78) when checked on September 23, 2026. Recheck the wallet before starting because prices and balances change. The bot caps its first BNB-to-USDT funding swap at $22 and keeps BNB for gas; each BTCB buy is capped at $20. It trades BTCB/USDT automatically when its rules produce a signal. The strategy's recent backtest lost money; live losses remain possible.
+The public wallet `0x3062dffa74ec3b8c232a2ae2799e1565702687df` held 0.029064 BNB (about $22.80) when checked on September 23, 2026. Recheck the wallet before starting because prices and balances change. The bot caps its first BNB-to-USDT funding swap at $22 and keeps BNB for gas; each BTCB buy is capped at $20. It trades BTCB/USDT automatically when its rules produce a signal. The strategy's recent backtest lost money; live losses remain possible.
 
 1. Open **PowerShell** on the same Windows computer. Do not put a private key into chat, a browser, GitHub, or a command argument.
 2. Go to the delivered project:
@@ -22,7 +22,7 @@ The public wallet `0x9D7CC5DAC432Ac61303552Cd8835fF34Aa2C39Ab` held 0.029066815 
 4. Start the live worker in that PowerShell window:
 
    ```powershell
-   python app.py --mode live --accept-loss-risk --expected-wallet 0x9D7CC5DAC432Ac61303552Cd8835fF34Aa2C39Ab --port 8766 --key-from-clipboard
+   python app.py --mode live --accept-loss-risk --expected-wallet 0x3062dffa74ec3b8c232a2ae2799e1565702687df --port 8766 --key-from-clipboard
    ```
 
 5. The bot displays `Copy the account private key in your wallet app, then return here and press Enter`. **After that prompt appears**, copy the account private key in your wallet app, return to PowerShell, and press Enter. **Do not paste into PowerShell.** The bot reads the clipboard once and clears it. Use only a dedicated bot wallet. The bot checks that the key derives the `--expected-wallet` address before any trading worker starts. If this is a different wallet from the address above, replace `--expected-wallet` with the new wallet's public 0x address before running the command. If you do not have the account private key, stop here; a public address or seed phrase cannot be entered into this mode.

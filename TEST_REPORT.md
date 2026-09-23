@@ -11,4 +11,4 @@
 - Dashboard renders balances, market freshness, signal, funding, buys/sells, transaction state and historical results. Local HTTP controls use a per-process token and Host/Origin checks.
 - Browser-tested pause and resume controls in paper mode.
 
-The user's public wallet was checked on BNB Chain and held 0.029066815 BNB, approximately $22.78 at the observed pool price. No private key was supplied. **No real-money transaction was sent.** Mainnet execution, gas estimation from a funded wallet, live token approvals and the full funded settlement cycle still require a small supervised acceptance test. Do not mistake mocked receipt tests or a public quote for that acceptance test.
+The current public wallet `0x3062dffa74ec3b8c232a2ae2799e1565702687df` was checked on BNB Chain and held 0.029064 BNB, approximately $22.80 at the observed pool price. No private key was supplied. **No real-money transaction was sent.** Mainnet execution, gas estimation from a funded wallet, live token approvals and the full funded settlement cycle still require a small supervised acceptance test. Do not mistake mocked receipt tests or a public quote for that acceptance test.
