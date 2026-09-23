@@ -9,6 +9,7 @@ import getpass
 import os
 import secrets
 import sys
+import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -78,6 +79,29 @@ class Handler(BaseHTTPRequestHandler):
             super().log_message(format, *args)
 
 
+class LocalServer(ThreadingHTTPServer):
+    allow_reuse_address = False
+
+    def server_bind(self):
+        if hasattr(socket, 'SO_EXCLUSIVEADDRUSE'):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+def serve(worker):
+    # Bind first: a second launch must never start an order worker before failing on the port.
+    server = LocalServer(('127.0.0.1', 8765), Handler)
+    try:
+        worker.start()
+        print(f'Orbit {worker.mode.upper()} dashboard: http://127.0.0.1:8765', flush=True)
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        worker.stop_event.set()
+        server.server_close()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', choices=['paper', 'live'], default='paper')
@@ -89,15 +113,12 @@ if __name__ == "__main__":
     args.data_dir.mkdir(parents=True, exist_ok=True)
     # No key is accepted over HTTP or written into the repository. Never paste a seed phrase here.
     key = (os.environ.pop('BOT_PRIVATE_KEY', None) or getpass.getpass('Dedicated bot wallet private key (hidden): ')) if args.mode == 'live' else None
-    bot = TradingBot(args.mode, key, args.data_dir)
-    key = None
-    bot.start()
-    server = ThreadingHTTPServer(("127.0.0.1", 8765), Handler)
-    print(f"Orbit {args.mode.upper()} dashboard: http://127.0.0.1:8765", flush=True)
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        bot.stop_event.set()
-        server.server_close()
+        bot = TradingBot(args.mode, key, args.data_dir)
+    except Exception:
+        parser.exit(2, 'Unable to initialize the wallet or ledger. Check local configuration; no order worker started.\n')
+    key = None
+    try:
+        serve(bot)
+    except OSError:
+        parser.exit(2, 'Dashboard port is unavailable. Stop the existing bot first; no new worker started.\n')

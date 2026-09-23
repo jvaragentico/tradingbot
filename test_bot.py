@@ -3,7 +3,7 @@ import threading
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from eth_account import Account
 from hexbytes import HexBytes
@@ -168,6 +168,26 @@ class ExecutionTests(unittest.TestCase):
         eth.get_transaction_receipt = Mock(return_value={'blockNumber': 102})
         self.assertIsNone(executor.reconcile())
         self.assertIsNotNone(ledger.state['pending'])
+
+    def test_external_wallet_change_blocks_submission(self):
+        executor, ledger, eth, function = self.setup_executor()
+        executor.chain.balances.side_effect = lambda address: {'BNB': 1, 'BTCB': 0, 'USDT': 0}
+        with self.assertRaises(RuntimeError): executor.submit(function, 'BUY', market())
+        eth.send_raw_transaction.assert_not_called()
+
+    def test_stale_market_blocks_submission(self):
+        executor, ledger, eth, function = self.setup_executor()
+        old = market()
+        old['time'] -= 60
+        with self.assertRaises(RuntimeError): executor.submit(function, 'BUY', old)
+        eth.send_raw_transaction.assert_not_called()
+
+    def test_duplicate_server_cannot_start_an_order_worker(self):
+        import app
+        worker = Mock()
+        with patch.object(app, 'LocalServer', side_effect=OSError('port in use')):
+            with self.assertRaises(OSError): app.serve(worker)
+        worker.start.assert_not_called()
 
     def test_router_abi_and_local_signature(self):
         w3 = Web3()
